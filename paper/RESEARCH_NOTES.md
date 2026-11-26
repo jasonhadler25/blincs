@@ -165,3 +165,203 @@ Instead of thinning a fixed sphere, coding theory wins by **shaping the symbol c
      - Cost: `1` extra BLAKE3 compression (`K_R` already present in BLINCS!).
    - **(ii) Exceeding $2^{32}$ signatures ($q \ge 2^{32}$):**
      - Graceful degradation (no cliff!): `U-FORS(w=10, S=16, 64-ext, k=15)` remains strictly stronger than baseline `BLINCS FORS(20, 8)` through **`2^{35}` (`8×` over limit: `116.05 b` vs `114.90 b`)**, and still provides `105.83 b` at $2^{36}$ and `79.87 b` at $2^{38}$.
+
+
+---
+
+## 7. Second Drawing-Board Pass: Breaking the `6 KiB` Wall (Diagnosis & Proven Theoretical Floors)
+
+After shipping `U-FORS` Preset A (`6,432 B`, `1.22 ms` Apple M6, `36.2 µs` verify, `3.58 s` est. `ST33`) across `blincs`, `signet`, and `git-signet`, we judged `-13%` size and `-2%` speed vs. `FORS(8,20)` (`7,392 B`, `1.25 ms`) too incremental and returned to first principles to find the global stateless BLAKE3 frontier.
+
+### 7.1 Root-Cause Diagnosis of Preset A
+In `BLINCS-128-7x5` (`U-FORS` Preset A, `6,432 B`, `143,022` cold compressions):
+- **70% of signature bytes (`4,480 / 6,432 B`)** and **89% of signing work (`127,673 / 143,022` compressions)** sat in the untouched `7×5` nibble `WOTS+(w=16, n=35)` hypertree.
+- Optimizing the bottom FTS alone can never move total size below `~5.5 KiB` or signing time below `~1.1 ms`; breaking past `~6 KiB` requires attacking the hypertree, the FTS, and the tree geometry jointly.
+
+### 7.2 Four Proven Information-Theoretic Walls for Pure Black-Box BLAKE3 Stateless Signatures ($q = 2^{32}$, 128-bit)
+Before relaxing any hardware assumption, we mapped the exact mathematical walls using compiled Rust dynamic programming and analytical bounds:
+
+1. **Bleichenbacher–Maurer (1996) / Sperner OTS DAG Bound:** Any 128-bit black-box 1-time hash signature requires $\ge 241$ hash calls/leaf (minimum at $w = 3$) and $\ge n \cdot 2^{128/n}$ hash calls to compress to $n$ chains ($16n$ wire bytes). Inside a single 1-time signature, uniform chain lengths $w_0 = \dots = w_{n-1} = w$ are uniquely optimal by AM-GM / Jensen's inequality (maximizing $\sum_i \log_2 w_i$ at fixed $\sum_i w_i$), and the middle constant-sum slice $S = \lfloor n(w-1)/2 \rfloor$ is uniquely size-optimal by de Bruijn–Tengbergen–Kruyswijk (1951).
+2. **Multi-Use Hypertree OTS (`CUTS`) 3-Way Symmetry Ceiling:** Replacing 1-time WOTS in internal hypertree layers with 2-use chains fails strictly: for *any* probability distribution on $\{0,\dots,w-1\}$, three i.i.d. draws satisfy $\Pr[Y \ge \min(X_1, X_2)] \ge 2/3$ (by 3-way symmetry of the minimum). Thus a 2-use chain leaks at most $\log_2(3/2) \approx 0.585$ bits/chain, requiring $\ge 219$ chains (`3,504 B`) — strictly worse than 1-time WOTS plus an extra Merkle level (`~400 + 16 B`).
+3. **BLAKE3 VOLE-in-the-Head (`FAEST`-Style ZK) Gate Wall:** BLAKE3's 32-bit ARX additions require `~10,752` non-linear AND gates per compression (`~8.4×` AES-128), yielding `~12–18 KiB` proofs — larger than hash-tree signatures and `~40×` slower to verify. (Pure symmetric ZK like `FAEST-EM-128s` hits `3,924 B` only by introducing an AES-128 ideal-cipher assumption and `~1.5 ms` verification.)
+4. **16-Byte Hash Width Wall:** Every internal Merkle node and chain element must remain `16 B` (`128` bits) against offline 2nd-preimage / chain-inversion attacks.
+
+---
+
+## 8. Three Synergistic Breakthroughs Behind `BLINCS-A2` (`3,292 B`)
+
+### 8.1 `U-PORS`: Single-Tree Octopus Merging + Full-Slice Lattice-Meet Asymmetry + Exact Without-Replacement DP
+
+We unified single-tree Octopus path merging (`PORS`, `ePrint 2025/2069`) with our multi-chain upper-layer `U-FORS` leaves (`n = 3` or `4` equal-length chains per leaf) and discovered **three mathematical refinements**:
+
+1. **Exact Without-Replacement Hypergeometric Transition DP (Recovering `+1.0` to `+3.8` Free Bits):**
+   In a single binary tree of $L = 2^A$ leaves, each honest signature opens $k$ **distinct** leaves without replacement. Naive with-replacement bounds approximate the probability that a target $k$-subset $S \subset [L]$ is covered after $r$ honest signatures by $s(r)^k$, where $s(r) = \sum_{t=1}^r \Pr[\mathrm{Bin}(r, k/L) = t]\, q(t)$.
+   - By exact $(k+1)$-state Markov transition DP over the number $u \in \{0,\dots,k\}$ of target leaves hit at least once,
+     $$M_{u \to u+a} = \frac{\binom{k-u}{a}\binom{L-(k-u)}{k-a}}{\binom{L}{k}},$$
+     we obtain the **exact** all-hit probability $p_{\mathrm{all}}(r) = (M^r)_{0, k}$.
+   - Conditioned on all $k$ target leaves being hit at least once, the per-leaf hit counts $(T_1,\dots,T_k)$ are **negatively associated** (Joag-Dev & Proschan, 1983, since each signature is a without-replacement $k$-subset and independent sums preserve negative association) and have strictly smaller conditional hit counts than independent $\mathrm{Bin}(r, k/L) \mid T \ge 1$ variables. Therefore
+     $$\Pr[\text{forge} \mid r] \;\le\; p_{\mathrm{all}}(r) \cdot \Bigl(\mathbb{E}\bigl[q(T) \mid T \ge 1\bigr]\Bigr)^k \;=\; p_{\mathrm{all}}(r)\left(\frac{s(r)}{1 - (1 - k/L)^r}\right)^k$$
+     is a **provably conservative elementary upper bound** that is **100% exact at $r = 1$** (where $p_{\mathrm{all}}(1) = 1/\binom{L}{k}$, tightening $(k/L)^k$ by $k^k/k! \approx 2^{14.2}$ at $k=12$!) and recovers **`+0.98` to `+1.47` bits** in the $q = 2^{30}..2^{32}$ regime.
+
+2. **Full Upper-Slice Advantage & Zero-LUT Closed-Form Hexagon Unranking ($n = 3, w = 24, S = 42, C = 376$):**
+   At small tree multiplicity ($h \ge 33$, $\lambda = q/2^h \le 1/2$), single-hit leaf cover $q(1) = 1/C$ contributes heavily alongside $q(2), q(3)$. Unlike `U-FORS` at $h = 35, a_1 = 5$ (where $t \ge 2$ dominated and power-of-two extreme-variance truncation beat the full slice), in `U-PORS` with $L = 2^{10} = 1{,}024$ leaves, keeping the **entire** upper slice $\mathcal{L}_S(3, w)$ maximizes $C$ while still activating Lattice-Meet Asymmetry — **eliminating the ROM lookup table completely**.
+   - **Exact $n = 3, w = 24$ slice sweep ($h = 33, A = 10, k = 10$, 100% exact DP, zero Monte Carlo):**
+
+     | Slice $S$ | Full Size $C$ | Verify Steps / Leaf ($69 - S$) | Exact $q(1)$ | Exact $q(2)$ | Exact $q(3)$ | Exact $q(4)$ | Raw `ITSR` @ $2^{32}$ (naive $s^k$) | Raw `ITSR` @ $2^{33}$ |
+     |---:|---:|---:|---:|---:|---:|---:|---:|---:|
+     | `38` | `420` | `31` | `0.002381` | `0.179092` | `0.344457` | `0.465645` | `128.61 b` (`127.65`) | `121.47 b` |
+     | `39` | `412` | `30` | `0.002427` | `0.176420` | `0.341928` | `0.463490` | `128.67 b` (`127.71`) | `121.55 b` |
+     | `40` | `402` | `29` | `0.002488` | `0.173999` | `0.339703` | `0.461617` | **`128.69 b`** (`127.72`) | **`121.60 b`** |
+     | `41` | `390` | `28` | `0.002564` | `0.171848` | `0.337797` | `0.460037` | `128.66 b` (`127.69`) | `121.60 b` |
+     | **`42`** | **`376`** | **`27`** | **`0.002660`** | **`0.170004`** | **`0.336239`** | **`0.458771`** | **`128.58 b`** (`127.60`) | **`121.56 b`** |
+     | `43` | `360` | `26` | `0.002778` | `0.168524` | `0.335081` | `0.457861` | `128.44 b` (`127.45`) | `121.46 b` |
+     | `44` | `342` | `25` | `0.002924` | `0.167500` | `0.334401` | `0.457375` | `128.22 b` (`127.22`) | `121.29 b` |
+     | `45` | `322` | `24` | `0.003106` | `0.167071` | `0.334321` | `0.457423` | `127.91 b` (`126.90`) | `121.03 b` |
+     | `46` | `300` | `23` | `0.003333` | `0.167451` | `0.335030` | `0.458190` | `127.48 b` (`126.46`) | `120.65 b` |
+
+   - **Closed-form hexagon unranker (`0 B` ROM, bijectively verified over all `0..376`):** For fixed $a \in [\max(0, S - 2(w-1)),\, \min(w-1, S)]$, let $\mathrm{rem} = S - a$, $b_{\mathrm{lo}} = \max(0, \mathrm{rem} - (w-1))$, $b_{\mathrm{hi}} = \min(w-1, \mathrm{rem})$. Stepping $a$ across at most $w = 24$ iterations (subtracting $\mathrm{len}(a) = b_{\mathrm{hi}} - b_{\mathrm{lo}} + 1$) maps $\mathrm{idx} \in \{0,\dots,375\}$ bijectively to $(a, b_{\mathrm{lo}} + \mathrm{idx}, \mathrm{rem} - b)$ with zero tables and zero division.
+   - **Exact 1-block leaf hash:** `16 B (tweak) + 3 × 16 B (chain tops) = 64 B` = **1 single BLAKE3 compression**!
+   - *(Note on 4D high-capacity `U-PORS`: we also discovered that `n = 4, w = 16, S = 39` (`C = 1,800`, zero LUT) achieves `q(1) = 0.00056, q(2) = 0.0927, q(3) = 0.2319`, enabling `< 1 KiB` (`980–1,092 B`) FTS at $h = 35, A = 9$; at `h = 33, A = 10`, `n = 3, w = 24, S = 42` wins on exact 1-block leaves, 32-lane SIMD alignment, and simplicity.)*
+
+3. **Verifier-Enforced Octopus Cap `sibs(D) ≤ m_max` — Zero Security Loss & Proven `+5.5` to `+7.8` Bit Gain:**
+   A natural worry with capping Octopus sibling count (`sibs(D) ≤ m_max`, where the signer grinds a 4-byte `ctr_ft` until the `k` distinct sorted leaves share enough tree ancestors to need at most `m_max` authentication siblings) is whether clustering honest leaves weakens `ITSR`.
+   - **High-precision `2,000,000`-trial Octopus distribution for $A = 10, k = 10$:**
+
+     | $m_{\max}$ | $p_{\mathrm{cap}}$ | $-\log_2 p_{\mathrm{cap}}$ | Mean Trials | Median | `p95` | `p99` | `p99.9` |
+     |---:|---:|---:|---:|---:|---:|---:|---:|
+     | `41` | `0.0001035` | `13.24 b` | `9,662` | `6,697` | `28,944` | `44,494` | `66,742` |
+     | `42` | `0.0002050` | `12.25 b` | `4,878` | `3,381` | `14,613` | `22,464` | `33,696` |
+     | `43` | `0.0003855` | `11.34 b` | `2,594` | `1,798` | `7,771` | `11,946` | `17,919` |
+     | **`44`** | **`0.0007325`** | **`10.41 b`** | **`1,365`** | **`946`** | **`4,090`** | **`6,287`** | **`9,430`** |
+     | `45` | `0.0013370` | `9.55 b` | `748` | `518` | `2,241` | `3,444` | `5,167` |
+     | `46` | `0.0024030` | `8.70 b` | `416` | `289` | `1,247` | `1,916` | `2,875` |
+     | `48` | `0.0073510` | `7.09 b` | `136` | `94` | `408` | `627` | `940` |
+
+   - **Importance-sampling Monte Carlo verification (`6,000` trials × `32` importance sub-draws per $r$) of $\Delta_{\mathrm{cap}}(r) = -\log_2\bigl(\Pr[D' \subseteq U \wedge \mathrm{sibs}(D') \le 44 \mid \text{conditioned honest}] / \Pr[D' \subseteq U \mid \text{unconditioned}]\bigr)$ at $A = 10, k = 10, m_{\max} = 44$:**
+     - $r = 2$: **`+3.31 bits`**
+     - $r = 3$: **`+4.61 bits`**
+     - $r = 4$: **`+5.51 bits`**
+     - $r = 5$: **`+6.13 bits`**
+     - $r = 6$: **`+6.59 bits`**
+     - $r = 7$: **`+6.87 bits`**
+     - $r = 8$: **`+7.28 bits`**
+     - $r = 10$: **`+7.75 bits`**
+   - **Why it helps instead of hurting:** Although each conditioned honest signature's leaves are slightly clustered, $r \ge 4$ independent honest signatures scatter across unrelated subtrees (translation invariance of `sibs`), so the union $U$ of covered leaves is nearly uniform — while the verifier STILL forces the adversary's forged $D'$ to satisfy $\mathrm{sibs}(D') \le 44$ (`1 / 1,365`).
+   - **Proof cleanliness decision:** Even though $\Delta_{\mathrm{cap}}$ delivers a verified **`+6.79` bits** at $q = 2^{32}$ and **`+7.35` bits** at $q = 2^{33}$, we chose `BLINCS-A2` to exceed `128.0` bits **with zero cap credit** (`128.58 b` elementary DP), so the formal proof in Lean 4 and the paper requires **zero** Monte Carlo assumptions while retaining `135.37` true bits at $2^{32}$ and `128.91` true bits at $2^{33}$.
+
+### 8.2 `S-WOTS+Z`: Constant-Sum Sperner + `z`-Zero-Bit Deterministic Counter Grinding
+Combining middle-slice Sperner unranking with a deterministic per-layer `u16` counter `ctr_l` requiring $z = 8$ leading zero bits in $H_l = \mathrm{BLAKE3\_KEYED}(K_{\mathrm{pub}},\, \mathrm{Tweak}_{\mathrm{OneTimeMsg}} \parallel \mathrm{root}_{l-1} \parallel \mathrm{ctr}_l)$ cuts the Sperner domain from $2^{128}$ to $2^{120}$:
+- **Exact `u128` verification (`n = 24, w = 40, S_mid = 468`):**
+  $$|\mathcal{L}_{468}(24, 40)| \;=\; \mathbf{1{,}973{,}221{,}677{,}906{,}098{,}493{,}567{,}206{,}234{,}001{,}571{,}000} \;>\; 2^{120} \;=\; 1{,}329{,}227{,}995{,}784{,}915{,}872{,}903{,}807{,}060{,}280{,}344{,}576$$
+  ($\log_2 |\mathcal{L}_{468}(24, 40)| = \mathbf{120.569964\text{ bits}}$, $+ z = 8 \implies \mathbf{128.569964\text{ bits}}$).
+  For $w = 39$, $|\mathcal{L}_{456}(24, 39)| = 1{,}102{,}272{,}360{,}296{,}506{,}971{,}467{,}046{,}668{,}212{,}509{,}411$ (`119.729892 < 120`), proving **`w = 40` is the exact integer minimum**.
+- **Security reduction:** Because $\mathcal{L}_{468}(24, 40)$ is an antichain, a forged $(r'_{l-1}, \mathrm{ctr}'_l)$ is dominated by the revealed signature iff its unranked vector equals the revealed vector (probability $2^{-120}$ on uniform `H_l[1..16]`) AND its top byte `H_l[0] == 0` (probability $2^{-8}$), yielding $2^{-128}$ per offline hash.
+- **Why $z = 8$ (`u16`) instead of $z = 10$ (`u16` hazard caught!):** With a `u16` (`65,536` values), $z = 10$ has overflow probability $(1023/1024)^{65536} \approx 2^{-92.4}$ — across $2^{32}$ signatures that leaves a `2^{-60}` overflow hazard (requiring ugly 3-byte `u24` counters). At $z = 8$, the `u16` overflow probability is $(255/256)^{65536} \approx \mathbf{2^{-370}}$ (impossible across $2^{128}$ keys!), grinding costs only `256` hashes/layer (`1,024` mean / `2,570` `p99` across `d = 4` layers — `< 0.6%` of signing work!), and saves `2` full chains (`128 B` across 4 layers) vs. `z = 0` (`Sp26(w=37, z=0)` = `3,412 B`).
+- **Exact constant-work verification:** Since $24 \times 39 = 936$ is even, $S_{\mathrm{mid}} = 468$ is exact, so every layer executes **exactly `468` verify chain steps** (zero variance).
+- **Zero-ROM in-place unranking:** Exact `O(S)` boxcar deconvolution (`prev[s] = cur[s] - cur[s-1] + prev[s-w]`, `469 × 16 B = 7.5 KiB` stack buffer, `0 B` ROM), verified bit-for-bit against the full DP table on boundary ranks $0, 1, 123456789, 2^{120}-1, |\mathcal{L}|-1$.
+
+### 8.3 Exact Global Regime Map (Quantifying the Cost of Every Hardware Constraint)
+
+Using a compiled Rust global DP across all hypertree partitions, per-layer OTS widths, `z ∈ {0, 8, 10, 12}`, and `U-PORS` codes, we quantified the exact price of each hardware constraint (`q = 2^{32}`, `≥ 128 b`, pure BLAKE3, stateless; `ST33` est. `25 µs/comp`, `160 MHz` Cortex-M33 est. `9.4 µs/comp`, Apple M6 1-core est. `8.6 ns/comp` — all embedded numbers unmeasured estimates):
+
+| Regime & Constraints | Best Clean Architecture | Raw / Base64 | vs `FORS` / `SLH-128s` | Est. Embedded Sign (`p99`) | Est. M6 kg / Sign / Ver | Top Tree | Security @ $2^{32}$ (raw / true) |
+|---|---|---:|---:|---:|---:|---:|---:|
+| *Shipped Preset A (`0` cache, `ST33 ≤ 5 s`, 0 grinding)* | `7×5` `WOTS16` + `U-FORS(3,10,64,5,15)` | `6,432` / `8,576 B` | `-13%` / `-18%` | `3.58 s` ST33 | `0.17 ms` / `1.22 ms` / `36 µs` | `1 KiB` | `138.5 b` |
+| **R1 — Strict `0`-cache `ST33 ≤ 5 s`** *(floor: `4,688 B`)* | `7×5` `Sp28(w23,z8)` + `U-PORS(4,16,S39,A9,k9,m32)` *(or `k10,m35`: `4,946 B` zero-cap `134.7 b`)* | `4,834` / `6,448 B` | `-35%` / `-38%` | `4.84 s` ST33 | `0.2 ms` / `1.35 ms` / `37 µs` | `1 KiB` | `126.0` / `131.3 b` |
+| **R2 — `128 KiB` Cached Top Tree, `ST33 warm ≤ 5 s`** *(floor: `3,742 B`)* | `12+5+5+5+5` `Sp25(w32,z10)` + `U-PORS(4,12,A9,k12,m41)` | `3,982` / `5,312 B` | `-46%` / `-49%` | `3.73 s` ST33 warm | `29 ms` / `1.23 ms` / `37 µs` | `128 KiB` | `123.9` / `129.0 b` |
+| **R3 — `0`-Cache `160 MHz` Cortex-M33 (`≤ 5 s`)** | `6+7+7+6+6` (`d=5`) + `U-PORS(4,16,S39,A10,k9,m40)` | `3,630` / `4,840 B` | `-51%` / `-54%` | `≤ 5.0 s` M33 (`~13 s` ST33) | `0.6 ms` / `3.80 ms` / `46 µs` | `2 KiB` | `123.9` / `129.1 b` |
+| **R4 — `0`-Cache `ST33 ≤ 5 s`, Sub-ms M6 Speed** | `7+5×5` `Sp32(w16,z8)` + `U-PORS(4,8,S19,A9,k13,m44)` | `5,136` / `6,848 B` | `-31%` / `-35%` | `4.77 s` ST33 | `0.7 ms` / `0.92 ms` / `28 µs` | `4 KiB` | `122.8` / `128.4 b` |
+| **R2 + R3 Combined (`128 KiB` Top Tree + `160 MHz` M33 `≤ 5 s`) — SELECTED `BLINCS-A2`** *(DP floor: `3,085 B`)* | **`12+7+7+7` (`d=4, h=33`) `Sp24(w40,z8)` + `U-PORS(n3,w24,S42,C376,A10,k10,m44)`** | **`3,292` / `4,392 B`** | **`-55%` / `-58%`** | **`4.29 s` M33** | **`34 ms` / `3.94 ms` / `37 µs`** | **`128 KiB`** | **`128.6` / `135.4 b`** |
+
+*(Other clean single-OTS-type finalists in the selected R2+R3 regime: `B1` `3,180 B` [needs cap credit, `124.0/129.5 b`], `A1` `3,228 B` [`Sp23(w47,z8)`, `4.77 s` M33, `128.6/135.4 b`], `Z0` `3,412 B` [`Sp26(w37,z0)`, ZERO WOTS grinding, `4.32 s` M33], `C2` `3,582 B` [`12+6×4`, `h=36`, `2.82 s` M33 / `2.55 ms` M6], `D1` `3,822 B` [`12+5×4`, `h=32`, `1.95 s` M33 / `1.76 ms` M6].)*
+
+---
+
+## 9. Paradigm-Shift Detour & Why We Rejected It: Crash-Safe `U-PORS` Hybrid vs. `SHRINCS`
+
+Before locking in `BLINCS-A2`, we investigated whether hybrid stateful/stateless signing (inspired by `SHRINCS`, Nick & Ruffing, `ePrint 2025/2203`) could break `< 2 KiB` safely:
+- **How `SHRINCS` fails:** Under `SignetId = H(fast_root || stateless_root)`, `SHRINCS` uses a stateful 1-time XMSS (`WOTS+`) tree on the fast branch (`~550 B`). Any single backup restore, VM snapshot rollback, or lock-free concurrent race ($r = 2$ on one leaf) drops security instantaneously from **`128 b → 0.0 b`**.
+- **Our Crash-Safe `U-PORS` Hybrid construction:** Replace the 1-time XMSS leaves on the fast branch with few-time `U-PORS` leaves under a 1-layer (`h = 12`, `4,096` leaves -> `1,670–1,798 B`, `0.3–0.6 ms` M6) or 2-layer (`12 + 8`, `1,048,576` leaves -> `2,152–2,280 B`) tree. Because every internal `WOTS` layer signs only a *deterministic* child root with deterministic smallest-valid `ctr`, **zero 1-time keys can ever be broken by rollback**; only the bottom `U-PORS` leaf sees $r$ collisions.
+- **Exact single-leaf rollback-survival bits (raw, before `+5 b` Octopus cap credit):**
+
+  | Fast-Path Variant | `1`-layer (`4K` lvs) | `2`-layer (`1M` lvs) | $r = 1$ | $r = 2$ | $r = 4$ | $r = 8$ | $r = 16$ | $r = 32$ |
+  |---|---:|---:|---:|---:|---:|---:|---:|---:|
+  | `SHRINCS` (XMSS `WOTS+`) | `~550 B` | `~1,000 B` | `128.0 b` | **`0.0 b`** | `0.0 b` | `0.0 b` | `0.0 b` | `0.0 b` |
+  | `Fast-Std` (`A9, n4, w16, k9, m32`) | `1,670 B` | `2,152 B` | `159.8 b` | **`132.6 b`** | `111.6 b` | `92.4 b` | `74.1 b` | `56.4 b` |
+  | `Fast-Tank` (`A10, n4, w16, k9, m40`) | `1,798 B` | `2,280 B` | `168.8 b` | **`146.2 b`** | **`127.4 b`** | `109.2 b` | `91.3 b` | `73.6 b` |
+  | `Fast-Ultra` (`A10, n4, w20, k9, m40`) | `1,798 B` | `2,280 B` | `177.7 b` | **`151.2 b`** | **`130.4 b`** | `111.2 b` | `92.7 b` | `74.7 b` |
+
+- **Why we still chose 100% pure stateless `BLINCS-A2` (`3,292 B`):**
+  1. Sustained adversarial/read-only-FS rollback ($r \ge 16..64$) still degrades a stateful branch, whereas `BLINCS-A2` has zero state and never degrades even if disk state is frozen forever.
+  2. Avoiding counter-order privacy leakage on `2`-layer fast paths requires a secret Feistel permutation (losing sequential lower-tree caching), while `1`-layer Feistel caps fast signatures at `4,096`.
+  3. Variable-size two-branch signatures complicate the spec, verifier, and Lean 4 formalization.
+  4. Once `BLINCS-A2` reached **`3,292 B`** purely statelessly (already smaller than AES `FAEST-EM-128s` and `2.4×` smaller than `SLH-DSA-128s`), staying 100% stateless was overwhelmingly cleaner.
+
+*(This construction remains an interesting secondary contribution / remark in the paper showing how `U-PORS` transforms `SHRINCS`'s catastrophic $r=2$ cliff into graceful multi-rollback degradation.)*
+
+---
+
+## 10. Complete Exact Specification & Audit Ledger for Selected Flagship **`BLINCS-A2` (`3,292 B`)**
+
+### 10.1 Locked Parameters & Exact Wire Layout (`3,292 B` Raw / `4,392 B` Base64)
+- **Hash primitive:** `BLAKE3` (`16`-byte truncated nodes/chains/salts/randomizer, `32`-byte `SignetId = K_pub || top_root`, `32`-byte message digest `h_msg` via Design B3 single-pass salted keyed BLAKE3).
+- **Hypertree:** `d = 4` layers, total height `h = 33` (`top = 12` cached in `128 KiB` RAM/Flash [`4,096` leaves], lower 3 layers uniform `h_low = 7` [`128` leaves each]).
+- **One-Time Signature (`S-WOTS+Z`):** Single OTS type across all 4 layers: `n = 24` chains, `w = 40` (`39` hash steps/chain), middle Sperner slice `S = 468`, deterministic `u16` counter (`2 B`) enforcing `z = 8` leading zero bits (`H_l[0] == 0`), exact `O(S)` boxcar deconvolution unranking (`0 B` ROM), `7`-block (`400 B`) leaf public-key hash.
+- **Few-Time Signature (`U-PORS`):** Single binary tree of height `A = 10` (`L = 1,024` leaves), `n = 3` chains/leaf, `w = 24` (`23` steps/chain), full upper slice `S = 42` (`C = 376` codewords, `27` verify steps/leaf, `0 B` ROM closed-form hexagon unranking, exact `64 B` = 1-block BLAKE3 leaf hash), `k = 10` distinct leaves, `u32` counter (`4 B`) enforcing Octopus sibling cap `sibs(D) ≤ m_max = 44`.
+- **Canonical fixed-length wire layout (`3,292 B`):**
+  - `e` (`16 B`) + `R` (`16 B`) = **`32 B`**
+  - `ctr_ft` (`4 B`, `u32` LE) + `10 × 3 × 16 B` (`U-PORS` chain values = `480 B`) + `44 × 16 B` (`U-PORS` Octopus siblings = `704 B`; if actual `sibs < 44`, trailing `(44 - sibs) × 16` bytes MUST be zero and verified zero for canonical encoding!) = **`1,188 B`**
+  - `4` hypertree layers, each `ctr_l` (`2 B`, `u16` LE) + `24 × 16 B` (`S-WOTS+Z` chains = `384 B`) + `h_l × 16 B` Merkle auth path (`7, 7, 7, 12` = `33 × 16 = 528 B`): `4 × 386 + 528` = **`2,072 B`**
+  - **Total:** `32 + 1,188 + 2,072` = **`3,292 B`** (`4,392 B` Base64).
+- **Unbiased `D`-extraction & fast rejection loop:**
+  - `D = BLAKE3_KEYED_XOF(K_pub, Tweak(Message) || R || h_msg || ctx || ctr_ft)`.
+  - First `33` bits -> `leaf_addr` (`(top_idx: 12b, l2: 7b, l1: 7b, l0: 7b)`).
+  - Subsequent `10`-bit chunks -> collect `10` distinct leaf indices in `0..1024` (reject duplicates, avg `10.04` chunks), sort ascending, compute `sibs(leaves)`. If `sibs > 44`, increment `ctr_ft` and repeat (**only 1 BLAKE3 compression per rejected trial**!).
+  - Once `sibs ≤ 44`, draw `10` unbiased codeword indices in `0..376` from subsequent `9`-bit chunks (reject `>= 376`, `73.4%` accept rate, zero modulo bias, zero division) and unrank via the closed-form hexagon unranker.
+
+### 10.2 Exact Security Curve (`U-PORS` Exact DP + Importance-Sampled Cap Credit)
+Exact `q(1..10)` for $\mathcal{L}_{42}(3, 24)$ (`C = 376`):
+`q(1)=0.0026595745`, `q(2)=0.1700038392`, `q(3)=0.3362391218`, `q(4)=0.4587714506`, `q(5)=0.5477348344`, `q(6)=0.6137590780`, `q(7)=0.6641389466`, `q(8)=0.7036129754`, `q(9)=0.7352753475`, `q(10)=0.7611901986`.
+
+| Budget $q$ | Naive $s^k$ Bound | **Elementary Exact Without-Replacement Bound (Zero Cap Credit)** | Importance-Sampled Cap Credit ($\Delta_{\mathrm{cap}}$) | **True Security (with Octopus Cap)** |
+|---|---:|---:|---:|---:|
+| $2^{30}$ | `138.28 b` | **`139.75 b`** | `~+5.7 b` | `~145.5 b` |
+| $2^{31}$ | `133.36 b` | **`134.58 b`** | `~+6.2 b` | `~140.8 b` |
+| **$2^{32}$ (target)** | `127.60 b` | **`128.58 b`** | **`+6.79 b`** *(dom $r=5..8$)* | **`135.37 b`** |
+| **$2^{33}$ ($2\times$ overuse)** | `120.79 b` | **`121.56 b`** | **`+7.35 b`** *(dom $r=7..10$)* | **`128.91 b`** *(still $> 128$ b!)* |
+| $2^{34}$ ($4\times$ overuse) | `112.71 b` | `113.29 b` | `~+7.8 b` | `~121.1 b` |
+| $2^{35}$ ($8\times$ overuse) | `103.14 b` | `103.55 b` | `~+8.1 b` | `~111.7 b` |
+| $2^{36}$ ($16\times$ overuse) | `91.89 b` | `92.16 b` | `~+8.3 b` | `~100.5 b` |
+| $2^{38}$ ($64\times$ overuse) | `64.43 b` | `64.52 b` | `~+8.6 b` | `~73.1 b` |
+
+### 10.3 Exact Compression Counts, SIMD Alignment & Tail-Jitter Analysis
+- **`from_seed` (128 KiB top height-12 tree):** `4,096 × 967 + 4,095` = **`3,964,927` compressions** (`~34.1 ms` est. Apple M6 1-core; `~37 s` est. one-time keygen on `160 MHz` M33; exact `128 × 32` leaf SIMD waves).
+- **Warm signing fixed work:**
+  - `3` lower height-7 trees (`3 × (128 × 967 + 127)`): `371,709` compressions (`128 × 24 = 3,072 = 96 × 32` exact 32-lane SIMD waves per tree!).
+  - `1` active top-layer `S-WOTS+Z` signature (`24 + 468`): `492` compressions.
+  - `1` `U-PORS` height-10 tree (`1,024 × (3 × 24 + 1) + 1,023`): `75,775` compressions (`1,024 × 3 = 3,072 = 96 × 32` exact 32-lane SIMD waves, `1,024` single-block 64 B leaves!).
+  - **Total fixed warm work:** **`447,976` compressions**.
+- **Warm signing grinding work:**
+  - `S-WOTS+Z` (`4 × 256` mean): `1,024` mean / `2,570` `p99` compressions (`u16` overflow prob `2^{-370}`).
+  - `U-PORS` (`m_max = 44`): `1,365` mean / `6,287` `p99` compressions (`u32` overflow prob `2^{-4.54 \times 10^6}`).
+  - **Total warm signing:** **`450,365` mean / `~456,000` joint `p99`** -> **`p99 / mean = 1.013×`** (virtually zero latency jitter!). Est. `160 MHz` Cortex-M33: **`4.23 s` mean / `4.29 s` `p99`** (`< 5.0 s`); est. Apple M6 1-core: **`~3.9 ms`**.
+- **Verification (100% constant work, zero variance):**
+  - `4 × (468 + 7) = 1,900` (`S-WOTS+Z`) + `33` (hypertree auth) + `10 × (27 + 1) + 44 = 324` (`U-PORS`) + `6` (header/msg) = **`2,263` compressions** (`~37 µs` est. Apple M6 1-core — practically identical to `FORS(8,20)`'s `34.2 µs` and `~40×` faster than `FAEST-EM-128s`!).
+
+### 10.4 Summary Comparison Against State of the Art (128-bit Classical Security)
+
+| Scheme | Assumption | Stateless? | $q_{\max}$ | Signature Size (Raw / B64) | Est. / Meas. Verify (1-core) |
+|---|---|---|---:|---:|---:|
+| `SLH-DSA-128s` (FIPS 205) | SHA-256 / SHAKE | Yes | $2^{64}$ | `7,856` / `10,476 B` | `~0.5–1.5 ms` |
+| `BLINCS FORS(8,20)` (old) | Pure BLAKE3 | Yes | $2^{32}$ | `7,392` / `9,856 B` | `34.2 µs` (M6 meas.) |
+| `BLINCS U-FORS` Preset A (v0.2) | Pure BLAKE3 | Yes | $2^{32}$ | `6,432` / `8,576 B` | `36.2 µs` (M6 meas.) |
+| `FAEST-EM-128s` (NIST R2) | AES-128 Ideal Cipher + Hash | Yes | $\infty$ | `3,924` / `5,232 B` | `~1,500 µs` |
+| **`BLINCS-A2` (NEW)** | **Pure BLAKE3** | **Yes** | **$2^{32}$** | **`3,292` / `4,392 B`** | **`~37 µs` (M6 est.)** |
+| *Reference: `ML-DSA-44` (FIPS 204)* | *Module-LWE / SIS (lattice)* | *Yes* | *$\infty$* | *`2,420` / `3,228 B`* | *`~40–60 µs`* |
+
+### 10.5 Additional References to Cite in the Paper
+- **Bleichenbacher & Maurer (ASIACRYPT 1996):** *Optimal Tree-Based One-Time Digital Signature Schemes* (DAG lower bound; cf. Zhang–Cui–Yu `ePrint 2023/850`).
+- **de Bruijn, van Ebbenhorst Tengbergen, & Kruyswijk (1951):** *On the set of divisors of a number* (Sperner / LYM property of divisor / chain-product lattices $[w]^n$).
+- **Joag-Dev & Proschan (Annals of Statistics 1983):** *Negative Association of Random Variables, with Applications* (justifies our conservative without-replacement hypergeometric `U-PORS` bound).
+- **Nick & Ruffing (`ePrint 2025/2203`):** *SHRINCS: 324-byte stateful post-quantum signatures with static backups* (baseline for our Crash-Safe `U-PORS` Hybrid comparison in §9).
+- **Baum et al. (`FAEST` v2, NIST Additional Signatures Round 2, 2025):** VOLE-in-the-Head AES-128 signatures (`3,924 B` `FAEST-EM-128s`, `4,506 B` `FAEST-128s`).

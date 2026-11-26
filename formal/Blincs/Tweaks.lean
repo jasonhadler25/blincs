@@ -1,20 +1,22 @@
 /-
-  BLINCS-128-7x5 Declarative Specification: Tweaks & Context Framing.
-  Proves exact 16-byte serialization, global tweak injectivity across all 6 kinds,
-  disjointness of hypertree vs U-FORS layer namespaces, and prefix-free context framing.
+  BLINCS-128-A2 Declarative Specification: Tweaks & Context Framing.
+  Proves exact 16-byte serialization, global tweak injectivity across all 8 kinds,
+  disjointness of hypertree vs U-PORS layer namespaces, and prefix-free context framing.
 -/
 import Blincs.Params
 
 namespace Blincs
 
-/-- The six domain-separated tweak kinds (`SPEC.md §5`). -/
+/-- The eight domain-separated tweak kinds (`SPEC.md §5`). -/
 inductive TweakKind where
   | chainSecret   -- 1
   | chain         -- 2
   | oneTimeKey    -- 3
   | node          -- 4
-  | fewRoot       -- 5
+  | oneTimeMsg    -- 5
   | message       -- 6
+  | fewSelect     -- 7
+  | fewCode       -- 8
   deriving DecidableEq, Repr
 
 def TweakKind.toUInt8 : TweakKind → UInt8
@@ -22,38 +24,28 @@ def TweakKind.toUInt8 : TweakKind → UInt8
   | .chain       => 2
   | .oneTimeKey  => 3
   | .node        => 4
-  | .fewRoot     => 5
+  | .oneTimeMsg  => 5
   | .message     => 6
+  | .fewSelect   => 7
+  | .fewCode     => 8
 
 theorem TweakKind.toUInt8_injective {a b : TweakKind} (h : a.toUInt8 = b.toUInt8) : a = b := by
   cases a <;> cases b <;> first | rfl | contradiction
 
-/-- Tweak layer byte for U-FORS tree `t : Fin 15` (`0x80 + t`). -/
-def uforsLayerByte (t : Fin UFORS_TREES) : UInt8 :=
-  UInt8.ofNat (UFORS_LAYER_BASE + t.val)
+/-- Tweak layer byte for the single U-PORS tree (`0x80 = 128`). -/
+def uporsLayerByte : UInt8 :=
+  UInt8.ofNat UPORS_LAYER
 
-/-- U-FORS layer bytes (`128..142`) are strictly disjoint from hypertree layer bytes (`0..6`). -/
-theorem uforsLayerByte_ne_htLayer (t : Fin UFORS_TREES) (ℓ : Fin LAYERS) :
-    uforsLayerByte t ≠ UInt8.ofNat ℓ.val := by
+/-- The U-PORS layer byte (`128`) is strictly disjoint from all hypertree layer bytes (`0..3`). -/
+theorem uporsLayerByte_ne_htLayer (ℓ : Fin LAYERS) :
+    uporsLayerByte ≠ UInt8.ofNat ℓ.val := by
   intro h
   have hnat := congrArg UInt8.toNat h
-  unfold uforsLayerByte UFORS_LAYER_BASE at hnat
-  have ht := t.isLt
+  unfold uporsLayerByte UPORS_LAYER at hnat
   have hl := ℓ.isLt
-  unfold UFORS_TREES at ht
   unfold LAYERS at hl
   simp only [UInt8.toNat_ofNat'] at hnat
   omega
-
-/-- Distinct U-FORS trees map to distinct layer bytes. -/
-theorem uforsLayerByte_injective {t₁ t₂ : Fin UFORS_TREES}
-    (h : uforsLayerByte t₁ = uforsLayerByte t₂) : t₁ = t₂ := by
-  have hnat := congrArg UInt8.toNat h
-  unfold uforsLayerByte UFORS_LAYER_BASE at hnat
-  have h1 := t₁.isLt; have h2 := t₂.isLt
-  unfold UFORS_TREES at h1 h2
-  simp only [UInt8.toNat_ofNat'] at hnat
-  exact Fin.ext (by omega)
 
 /-- Structured 16-byte BLINCS tweak with statically bounded 48-bit `tree` field. -/
 structure Tweak where
@@ -88,10 +80,8 @@ private theorem encodeLE_succ (x m : Nat) :
   · simp [encodeLE]
   · intro i h1 h2
     cases i with
-    | zero =>
-      simp [encodeLE, leByte]
-    | succ j =>
-      simp [encodeLE, leByte, Nat.pow_succ', Nat.div_div_eq_div_mul]
+    | zero => simp [encodeLE, leByte]
+    | succ j => simp [encodeLE, leByte, Nat.pow_succ', Nat.div_div_eq_div_mul]
 
 private theorem decodeLE_encodeLE (m : Nat) : ∀ x < 256 ^ m, decodeLE (encodeLE x m) = x := by
   induction m with
@@ -125,7 +115,7 @@ def encodeTweak (t : Tweak) : List UInt8 :=
 theorem encodeTweak_length (t : Tweak) : (encodeTweak t).length = 16 := by
   simp [encodeTweak, encodeLE_length]
 
-private theorem append_eq_of_length_eq {α : Type} {a b c d : List α}
+theorem append_eq_of_length_eq {α : Type} {a b c d : List α}
     (hlen : a.length = c.length) (h : a ++ b = c ++ d) : a = c ∧ b = d := by
   constructor
   · have := congrArg (List.take a.length) h
