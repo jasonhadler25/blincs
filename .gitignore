@@ -1,0 +1,9 @@
+/reference/target/
+/formal/.lake/
+/paper/*.aux
+/paper/*.bbl
+/paper/*.blg
+/paper/*.log
+/paper/*.out
+/paper/*.xdv
+.DS_Store

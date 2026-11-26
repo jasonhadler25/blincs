@@ -1,0 +1,6 @@
+name = "BlincsFormal"
+version = "0.1.0"
+defaultTargets = ["Blincs"]
+
+[[lean_lib]]
+name = "Blincs"

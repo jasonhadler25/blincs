@@ -1,0 +1,586 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,calc,shapes.geometric,backgrounds}
+\usepackage[colorlinks=true,linkcolor=navy,citecolor=navy,urlcolor=navy]{hyperref}
+
+\emergencystretch=1.5em
+
+\definecolor{navy}{RGB}{24,54,96}
+\definecolor{slate}{RGB}{72,88,108}
+\definecolor{boxbg}{RGB}{246,248,251}
+\definecolor{accentbg}{RGB}{235,241,248}
+\definecolor{rulegray}{RGB}{185,195,208}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{proposition}[theorem]{Proposition}
+
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
+% Cryptographic notation macros
+\newcommand{\Adv}{\ensuremath{\mathsf{Adv}}}
+\newcommand{\EUFCMA}{\ensuremath{\mathrm{EUF\text{-}CMA}}}
+\newcommand{\PRF}{\ensuremath{\mathrm{PRF}}}
+\newcommand{\SPR}{\ensuremath{\mathrm{SPR}}}
+\newcommand{\OW}{\ensuremath{\mathrm{OW}}}
+\newcommand{\DMSPR}{\ensuremath{\mathrm{DM\text{-}SPR}}}
+\newcommand{\SMTCR}{\ensuremath{\mathrm{SM\text{-}TCR}}}
+\newcommand{\SMDSPR}{\ensuremath{\mathrm{SM\text{-}DSPR}}}
+\newcommand{\SMUD}{\ensuremath{\mathrm{SM\text{-}UD}}}
+\newcommand{\MeSPR}{\ensuremath{\mathrm{M\text{-}eSPR}}}
+\newcommand{\ITSR}{\ensuremath{\mathrm{ITSR}}}
+\newcommand{\Keyed}{\mathsf{Keyed}}
+\newcommand{\Derive}{\mathsf{Derive}}
+\newcommand{\ShortHash}{\mathsf{ShortHash}}
+\newcommand{\tweak}{\mathsf{tweak}}
+\newcommand{\framed}{\mathsf{framed}}
+\newcommand{\BLINCS}{\textsf{BLINCS-128-7x5}}
+\newcommand{\SPHINCS}{\textsf{SPHINCS+}}
+\newcommand{\SLHDSA}{\textsf{SLH-DSA}}
+\newcommand{\WOTS}{\textsf{WOTS+}}
+\newcommand{\FORS}{\textsf{FORS}}
+\newcommand{\UFORS}{\textsf{U-FORS}}
+\newcommand{\KeyGen}{\mathsf{KeyGen}}
+\newcommand{\Sign}{\mathsf{Sign}}
+\newcommand{\Verify}{\mathsf{Verify}}
+\newcommand{\SK}{\mathsf{SK}}
+\newcommand{\VK}{\mathsf{VK}}
+\newcommand{\pkseed}{\mathsf{pk\_seed}}
+\newcommand{\rootv}{\mathsf{root}}
+\newcommand{\leafaddr}{\mathsf{leaf\_addr}}
+\newcommand{\uforsroot}{\mathsf{ufors\_root}}
+\newcommand{\hmsg}{h_{\mathrm{msg}}}
+\newcommand{\Ksec}{K_{\mathrm{sec}}}
+\newcommand{\Ksalt}{K_{\mathrm{salt}}}
+\newcommand{\KR}{K_{R}}
+\newcommand{\Kpub}{K_{\mathrm{pub}}}
+\newcommand{\Kcontent}{K_{\mathrm{content}}}
+\newcommand{\Kmsg}{K_{\mathrm{msg}}}
+\newcommand{\concat}{\mathbin{\|}}
+\newcommand{\bits}{\{0,1\}}
+\newcommand{\getsr}{\xleftarrow{\$}}
+\newcommand{\Prob}{\Pr}
+
+\title{\vspace{-1.2em}\textbf{BLINCS: Concrete Security Reductions, Asymmetric Lattice Shaping (\UFORS{}),\\
+and Formal Comparison with SPHINCS+ for a Single-Pass\\
+BLAKE3 Stateless Hash-Based Signature Scheme}}
+
+\author{
+  \textbf{Draft Technical Report (Pre-1.0, Experimental)}\\[0.35em]
+  \small Written primarily by an AI research assistant under the direction of the repository owner.\\
+  \small No independent human peer review or cryptographic audit has been performed.\\
+  \small Companion specification, teaching implementation, and Lean~4 proofs: \texttt{jasonhadler25/blincs}
+}
+
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present the design, coding-theoretic foundation, and concrete cryptographic security analysis of \BLINCS{}, a stateless hash-based signature scheme based on BLAKE3 and SPHINCS for a signing budget of $q_s \le 2^{32}$ signatures per signing key, with $6{,}432$-byte signatures, $32$-byte verifying keys, zero counter grinding, a $1\text{ KiB}$ top tree, a single uniform Merkle tree height ($h_{\mathrm{tree}} = 5$) and a single hash-chain leaf primitive across the entire construction, bounded length-framed application contexts, and \emph{two-stage single-pass salted content hashing}.
+
+Our work makes five contributions. First, we introduce \textbf{\UFORS{}} (\emph{Upper-Layer Constant-Sum Lattice Forest}), replacing raw-secret \FORS{} leaves with $n=3$ equal-length hash chains encoded by an upper-layer constant-sum extreme-variance antichain $\mathcal{C} \subset \{0,\dots,9\}^3$ ($\sum c_i = 16$, $|\mathcal{C}|=64$, fitting in one single $64$-byte BLAKE3 compression). Exploiting \emph{Lattice-Meet Asymmetry} on the upward-only hash-chain channel $[w]^n$ ($m \ge 2$), \UFORS{} strictly advances the zero-grinding Pareto frontier simultaneously on signature size, signing cost, security, SIMD vector occupancy, and simplicity---not only in \BLINCS{} ($-960$~B, $+4.02$~bits at identical signing cost) but also in NIST FIPS~205 \textsf{SLH-DSA-128s} ($-672$~B, $3.0\times$ faster) and \textsf{SLH-DSA-128f} ($-1{,}008$~B, faster verification, $+2.74$~bits). We contrast this with systematic experiments showing why classical distance-thinning codes (Reed--Solomon/MDS, list-recoverable codes, Golay $G_{24}$, Steiner systems, Graham--Sloane, Varshamov--Tenengolts) lose under salt-randomized uniform queries, and derive the exact closed-form Shannon ceiling ($\log_2 e \approx 1.4427$~bits/tree) for single-chain constant-composition leaves. Second, we provide a complete declarative formalization of \BLINCS{} in Lean~4 (zero \texttt{sorry}, zero custom axioms) mechanically proving completeness, global injectivity of all six tweak kinds, \UFORS{} constant-sum and antichain properties, \WOTS{} dominance, Merkle soundness, wire bijection ($6{,}432$~B), and an exhaustive twelve-witness \emph{combinatorial forgery dichotomy}. Third, we lift this machine-checked decomposition into a concrete standard-model $\EUFCMA$ security proof under correct use (Theorem~\ref{thm:euf-cma}, exact DP \ITSR{} exponent $138.48$~bits at $q_s = 2^{32}$). Fourth, we prove an \emph{attacker-generous reduction to plain keyed-BLAKE3 second-preimage resistance} (Theorem~\ref{thm:generous-2pr}). Fifth, we analyze secondary resilience under incorrect use---salt-source failure (Theorem~\ref{thm:rng-fallback}, also proved in Lean~4) and signing overuse ($q_s \ge 2^{32}$)---and provide a bidirectional theorem-lifting matrix comparing \BLINCS{} with \SPHINCS{} / FIPS~205.
+\end{abstract}
+
+\noindent\textbf{Keywords:} Stateless hash-based signatures, BLAKE3, SPHINCS+, SLH-DSA, U-FORS, asymmetric channel coding, second-preimage resistance, Lean~4 formal verification.
+
+\section{Introduction}
+
+Stateless hash-based signature schemes, pioneered by SPHINCS~\cite{bernstein2015sphincs}, refined in \SPHINCS{}~\cite{bernstein2019sphincsplus,hulsing2022sphincsplus}, and standardized as NIST FIPS~205 (\SLHDSA{})~\cite{nist2024fips205}, achieve digital signatures relying solely on symmetric hash-function assumptions. Standard \SLHDSA{} carries two practical trade-offs at the $128$-bit security level: signatures are either $7{,}856$~bytes with slow signing (\textsf{SLH-DSA-128s}, $q_s \le 2^{64}$, $h=63$) or $17{,}088$~bytes (\textsf{SLH-DSA-128f}), and hedged signing hashes the message $M$ twice unless one either sacrifices hedging or hashes $M$ externally without a salt.
+
+\BLINCS{} is an experimental stateless hash-based signature suite based on BLAKE3~\cite{oconnor2020blake3} and SPHINCS targeting a realistic operational budget of $q_s \le 2^{32}$ signatures per signing key (over $4.29 \times 10^9$ signatures: ten signatures per second for $13.6$~years) while staying under $5\text{ s}$ nominal $99$th-percentile signing time on constrained $60\text{ MHz}$ microcontrollers (such as a Ledger \textsf{ST33} Secure Element) with zero counter grinding ($\mathrm{p99} = \mathrm{mean} = \max$). Replacing \FORS{} with \UFORS{} unifies the entire construction onto a \emph{single} Merkle tree height ($h_{\mathrm{tree}} = 5$, $32$ leaves per tree), a \emph{single} hash-chain leaf primitive, and only \emph{six} tweak kinds, reducing signature size to $6{,}432$~bytes ($1{,}424$~bytes smaller than \textsf{SLH-DSA-128s}) while increasing exact \ITSR{} security from $134.46$ to $138.48$~bits at identical signing cost.
+
+\paragraph{Terminology and security-goal scope.}
+The companion specification and Rust crate (\texttt{signet}) use capability terminology---\emph{Signet} ($\SK$), \emph{SignetId} ($\VK$, $32$~B), and \emph{Imprint} ($\sigma$, $6{,}432$~B). Throughout this paper we use standard cryptographic notation $(\SK, \VK, \sigma)$ and refer to $\VK$ as the \emph{verifying key}. Our security analysis follows a clear two-tier priority:
+\begin{enumerate}[leftmargin=1.5em,itemsep=1pt]
+  \item \textbf{Primary goal (security under correct use):} The signing seed remains secret, the salt source supplies a unique unpredictable salt $e$ per signature, and total signatures satisfy $q_s < 2^{32}$.
+  \item \textbf{Secondary goal (graceful degradation under incorrect use):} Where achievable at negligible complexity, we also analyze (a) a stuck or leaked salt source (repeating $e$ while the signing seed remains secret) and (b) exceeding the $2^{32}$ signing budget. Compromise or predictability of the signing seed itself is explicitly outside scope.
+\end{enumerate}
+
+\section{Preliminaries and Security Definitions}
+\label{sec:prelim}
+
+For $m \in \mathbb{N}$, let $\mathcal{B}^m = \{0,\dots,255\}^m$ denote $m$-byte strings and $\mathcal{B}^*$ denote finite byte strings. Concatenation is written $x \concat y$, byte slicing is $x[a..b]$ (with $x[..n] = x[0..n]$), and fixed-width integers are little-endian. For a finite set $S$, $x \getsr S$ denotes uniform sampling.
+
+\subsection{BLAKE3 Modes}
+
+BLAKE3~\cite{oconnor2020blake3} is a Merkle-tree hash function built over a $7$-round ChaCha-like compression function $f_{\mathrm{B3}}$ compressing a $64$-byte block and $32$-byte chaining value into $32$~bytes. \BLINCS{} uses exclusively two $32$-byte modes: $\Keyed(K, M)$ (\texttt{KEYED\_HASH}, loading $K \in \mathcal{B}^{32}$ directly into the initial chaining value) and $\Derive(\mathsf{ctx}, M)$ (\texttt{DERIVE\_KEY}). Because $\Keyed(K, M)$ binds $K$ into the initial chaining value outside the message buffer, \emph{any input $M$ of length $\le 64$~bytes executes in exactly one compression $f_{\mathrm{B3}}$}.
+
+\subsection{Symmetric Hash and Signature Security Notions}
+
+A context-bound signature scheme $(\KeyGen, \Sign, \Verify)$ operates over contexts $\mathsf{ctx} \in \mathcal{B}^{\le 255}$ and messages $M \in \mathcal{B}^{< 2^{64}}$; $\Adv^{\EUFCMA}_{\Sigma}(\mathcal{A})$ denotes the probability that $\mathcal{A}$ outputs a valid $(\mathsf{ctx}^*, M^*, \sigma^*)$ with $(\mathsf{ctx}^*, M^*)$ never queried to $\Sign(\SK, \cdot, \cdot)$. Following~\cite{hulsing2016mitigating,bernstein2019sphincsplus,hulsing2022sphincsplus}, we recall the symmetric security notions used in our reductions:
+
+\begin{definition}[$\PRF$, $\SPR$, $\SMTCR$, $\MeSPR$, and $\SMDSPR$]
+\label{def:hash-notions}
+Let $\mathsf{Th}: \mathcal{P} \times \mathcal{T} \times \mathcal{M} \to \mathcal{Y}$ be a tweakable hash family.
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt]
+  \item $\Adv^{\PRF}_{F}(\mathcal{D})$ is the distinguishing advantage between $F(K, \cdot)$ ($K \getsr \mathcal{K}$) and a uniform random function.
+  \item $\Adv^{\SPR}_{F}(\mathcal{A})$ is the probability that $\mathcal{A}(K, x)$ (for $K \getsr \mathcal{K}, x \getsr \mathcal{D}_{\mathcal{X}}$) outputs $x' \neq x$ with $F(K, x') = F(K, x)$.
+  \item $\Adv^{\SMTCR}_{\mathsf{Th}, p}(\mathcal{A})$ (Single-Function, Multi-Target Target-Collision Resistance) is the probability that, given $P \getsr \mathcal{P}$ and $p$ targets $(T_i, x_i)$ with distinct tweaks $T_i$ and uniform $x_i \getsr \mathcal{M}$, $\mathcal{A}$ outputs $(j, x')$ with $x' \neq x_j$ and $\mathsf{Th}(P, T_j, x') = \mathsf{Th}(P, T_j, x_j)$. When $\mathcal{A}$ commits to $x_j$ before the challenger draws a fresh salt $e_j$ defining $\Kmsg^{(j)} = \Keyed(\Kcontent, e_j \concat \framed(\mathsf{ctx}_j))$, we denote the resulting multi-target extended second-preimage advantage by $\Adv^{\MeSPR}_{\mathrm{content}, q_s}(\mathcal{A})$.
+  \item $\Adv^{\SMDSPR}_{\mathsf{Th}, p}(\mathcal{A})$ (Decisional Second-Preimage Resistance~\cite{hulsing2022sphincsplus}) for $\mathcal{M} = \mathcal{Y} = \mathcal{B}^n$ is
+  \[
+    \max\bigl\{0,\; \Prob[\mathsf{SP}(P, T_j, x_j) = b] - \Prob[\mathsf{SP}(P, T_j, x_j) \neq b]\bigr\},
+  \]
+  where $\mathsf{SP}(P, T, x) = 1 \iff \exists\, x' \neq x,\; \mathsf{Th}(P,T,x') = \mathsf{Th}(P,T,x)$.
+\end{itemize}
+\end{definition}
+
+\begin{definition}[Lattice-Meet Interleaved Target Subset Resilience ($\ITSR_{\mathcal{C}}$)]
+\label{def:itsr}
+For parameters $(h, k, a_1)$ and an antichain code $\mathcal{C} \subseteq [w]^n$ ($[w] = \{0,\dots,w-1\}$), let $H_{\mathrm{idx}}: \mathcal{K} \times \mathcal{X} \to [2^h] \times ([2^{a_1}] \times \mathcal{C})^k$ map inputs to a leaf address $\leafaddr$ and $k$ pairs $(\ell_\tau, c_\tau)$. After observing $q_s$ honestly randomized queries $H_{\mathrm{idx}}(K, x_j) = (\leafaddr_j, (\ell_{j,\tau}, c_{j,\tau})_{\tau=0}^{k-1})$, adversary $\mathcal{A}$ wins by outputting $x^* \notin \{x_1,\dots,x_{q_s}\}$ whose image $(\leafaddr^*, (\ell^*_\tau, c^*_\tau))$ satisfies the coordinatewise lattice-meet cover condition:
+\begin{multline}
+  \forall\,\tau \in \{0,\dots,k-1\},\;\; \forall\, i \in \{0,\dots,n-1\},\;\;
+  \exists\, j \in \{1,\dots,q_s\}:\\
+  (\leafaddr_j = \leafaddr^*) \land (\ell_{j,\tau} = \ell^*_\tau) \land (c_{j,\tau,i} \le c^*_{\tau,i}).
+\label{eq:ufors-cover}
+\end{multline}
+Setting $n=1, w=1$ recovers standard \FORS{} $\ITSR$~\cite{bernstein2019sphincsplus,hulsing2022sphincsplus}. We write $\Adv^{\ITSR}_{\mathcal{C}, q_s}(\mathcal{A})$ for $\mathcal{A}$'s winning probability.
+\end{definition}
+
+\section{Coding Theory on Asymmetric Hash Channels and \UFORS{}}
+\label{sec:coding}
+
+Standard hash-based signatures use elementary codes: \WOTS{} reinvented Berger's~1961 all-unidirectional-error-detecting (AUED) checksum~\cite{berger1961aued}, while \FORS{} uses the uncoded product space $[2^a]^k$ where $89\%$ of the signature ($2{,}560 / 2{,}880$~B in \BLINCS{}'s earlier draft) is Merkle authentication paths. Before selecting \UFORS{}, we formulated the exact coding-theoretic channel and evaluated six major branches of coding theory.
+
+\subsection{The Asymmetric Hash-Chain Channel and Negative Results on Distance Thinning}
+
+Revealing $m$ codewords $c^{(1)},\dots,c^{(m)} \in \mathcal{C} \subseteq [w]^n$ on the same hash-chain leaf exposes their coordinatewise \emph{lattice meet} $\bigwedge_{j=1}^m c^{(j)} = (\min_j c^{(j)}_0, \dots, \min_j c^{(j)}_{n-1})$, allowing forward hashing to forge any $c^* \in \mathcal{C}$ with $c^* \succeq \bigwedge_{j=1}^m c^{(j)}$. Let $q_{\mathcal{C}}(m) = \mathbb{E}[|\{c^* \in \mathcal{C} : c^* \succeq \bigwedge_{j=1}^m c^{(j)}\}| / |\mathcal{C}|]$ under uniform independent honest reveals (guaranteed by the unpredictable salt $e$).
+
+\paragraph{1. Zero-error list-recoverable and Reed--Solomon / MDS codes.}
+Zero-error $(0, r, L)$-list-recovery over $\Sigma^k$ ($|\mathcal{C} \cap (S_0 \times \dots \times S_{k-1})| \le L$ for all $|S_\tau| \le r$) is verbatim the worst-case $r$-time signature condition, generalizing $r$-cover-free families~\cite{kautz1964cff,dyachkov1982cff}. However, by the list-recovery capacity theorem, keeping $L$ small requires rate $R < 1 - \log_{|\Sigma|} r$, so $|\mathcal{C}| < (|\Sigma|/r)^k$. Under salt-randomized uniform queries, shrinking $|\mathcal{C}|$ inflates exact codeword collisions $p_{\mathrm{exact}} \approx r/|\mathcal{C}|$ faster than it lowers fresh forgeries $p_{\mathrm{fresh}}$. Exact tests over $\mathbb{F}_7$ and $\mathbb{F}_{11}$ confirm this: $\mathrm{RS}[11, 3]_{\mathbb{F}_{11}}$ ($d = 9$, $5$-cover-free) drives $p_{\mathrm{fresh}} = 0$ through $r = 6$, yet total cover probability $p_{\mathrm{total}}$ remains $151\times$ worse than uncoded $[11]^{11}$ at $r = 5$ and $41\times$ worse at $r = 6$.
+
+\paragraph{2. Classical high-distance constant-weight and asymmetric ECCs.}
+We evaluated six celebrated distance-maximizing codes directly on the upward-only channel against their full uncoded constant-weight Johnson layer $J(n,u)$: Extended Binary Golay $G_{24}$ octads (Steiner $S(5,8,24)$, $d_H = 8$: $q(2)=0.00459$ vs.\ full $J(24,8)$ $0.00337$), Golay $G_{24}$ dodecads ($d_H=8$), Graham--Sloane asymmetric ECC~\cite{graham1980asymmetric} in $J(16,4)$ ($d_H=4$), Steiner $S(3,4,16)$ affine planes ($d_H=4$), projective plane $PG(2,3) = S(2,4,13)$, and constant-weight Varshamov--Tenengolts $VT_0(12)$ ($d_H=4$). \emph{All six lose to the full uncoded constant-weight sphere.} Because regular $t$-designs have the same density inside a random multi-query cover box as the ambient layer, distance-based thinning never lowers the fresh-cover fraction while inflating exact collisions $m / |\mathcal{C}|$.
+
+\subsection{Where Coding Theory Wins: Asymmetric Shaping and Lattice-Meet Asymmetry}
+
+Instead of thinning a fixed sphere, coding theory wins on the asymmetric channel $[w]^n$ by \emph{shaping the empirical symbol composition (method of types)}.
+
+\begin{proposition}[Universal Shannon Ceiling for Single-Chain Constant-Composition Leaves]
+\label{prop:1d-limit}
+Consider $k$ height-$a_1$ trees ($L = 2^{a_1}$) where each leaf is a single hash chain $x_0 \to \dots \to x_{w-1} \to \mathsf{leaf} = H(x_{w-1})$ (preventing Merkle sibling leakage of $x_{w-1}$) and opening depths across the $k$ trees follow a constant-composition code of type $P = (p_0,\dots,p_{w-1})$ with CDF $F_v = \sum_{u=0}^v p_u$. For small $r/L$, the per-tree cover exponent improvement over uncoded \FORS{} is $-\sum_{v=0}^{w-1} p_v \ln F_v$ nats, uniquely maximized by the closed-form KKT recurrence $r_0 = 0$, $F_v / F_{v+1} = r_{v+1} = e^{-(1 - r_v)}$ (yielding $+0.5307$~bits/tree at $w=2$ with $p_0 = 1/e$, $+1.2802$ at $w=16$), and bounded universally for all $w \ge 1$ by
+\[
+  -\sum_{v=0}^{w-1} p_v \ln F_v \;\xrightarrow{\;w\to\infty\;}\; -\int_0^1 \ln F\,dF \;=\; 1\text{ nat} \;=\; \log_2 e \;\approx\; 1.4427\text{ bits/tree}.
+\]
+\end{proposition}
+
+To break past the $1.4427$~bits/tree barrier without rejection-sampling grinding, chains must be co-located inside the \emph{same} Merkle leaf ($n \ge 3$):
+\begin{itemize}[leftmargin=1.5em,itemsep=2pt]
+  \item \textbf{Lattice-Meet Asymmetry ($n \ge 3$):} While $[w]^n$ is rank-symmetric ($S \leftrightarrow n(w-1)-S$) for $m = 1$ (one-time signatures~\cite{bos1992csum,zhang2023csum}), the lattice meet $\wedge = \min$ \emph{breaks rank symmetry for all $m \ge 2$}. At $n=2$, upper slices of $[w]^2$ are isomorphic to smaller diagonals (zero asymmetry). At $n = 3$---the exact minimum dimension where asymmetry activates \emph{and} where $3 \times 16\text{ B} + 16\text{ B tweak} = 64\text{ B}$ equals exactly one BLAKE3 compression---pushing the constant sum $S$ \emph{above} the middle rank $\lfloor 3(w-1)/2 \rfloor$ pins untouched coordinates at $\min_i = w-1$, simultaneously slashing $q_{\mathcal{C}}(m)$ for every $m \ge 2$ and slashing verification chain steps $3(w-1) - S$. (This is the few-time $m \ge 2$ counterpart to Khovratovich, Kudinov, and Wagner's upper-hypercube verification speedup for $1$-time OTS~\cite{khovratovich2025hypercube}.)
+  \item \textbf{Extreme-variance power-of-two shaping:} Inside $\mathcal{L}_{16}(3, 10) = \{(a,b,c) \in \{0,\dots,9\}^3 : a+b+c = 16\}$ ($69$ triples), excluding the $5$ lowest-variance center triples $(5,5,6)$, $(5,6,5)$, $(6,5,5)$, $(4,6,6)$, and $(6,4,6)$ leaves a $64$-element ($6$-bit) antichain $\mathcal{C}_{64}$ whose exact $q_{\mathcal{C}_{64}}(2) = 0.21992$ beats both balanced $64$-subsets ($0.22916$) and even the full unpruned $69$-element layer ($0.22088$). Local hill-climbing over arbitrary non-flat antichains in $\{0,\dots,9\}^3$ improves security by only $+0.04$~bits, confirming near-global optimality.
+\end{itemize}
+
+\begin{table}[t]
+\centering
+\caption{Exact dynamic-programming Pareto comparison of \UFORS{} ($n=3$, zero grinding, fixed size) vs.\ \FORS{} across \BLINCS{} ($q=2^{32}$) and NIST FIPS~205 \textsf{SLH-DSA-128s/f} ($q=2^{64}$).}
+\label{tab:ufors-pareto}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+\textbf{Regime \& Bottom FTS} & \textbf{Bytes} & $\Delta$\textbf{B} & \textbf{Sign} & \textbf{Ver.} & \textbf{\ITSR{}} ($q_{\max}$) & ($2 q_{\max}$) \\
+\midrule
+\BLINCS{} \FORS{}$(k{=}20, a{=}8)$ & $2{,}880$ & --- & $15{,}346$ & $186$ & $134.46$ & $128.85$ \\
+\textbf{\BLINCS{} \UFORS{}$(w{=}10, S{=}16, a_1{=}5, k{=}15)$} & $\mathbf{1{,}920}$ & $\mathbf{-960}$ & $\mathbf{15{,}349}$ & $259$ & $\mathbf{138.48}$ & $\mathbf{132.13}$ \\
+\BLINCS{} \UFORS{}$(w{=}14, S{=}23, a_1{=}5, k{=}14)$ & $1{,}792$ & $-1{,}088$ & $19{,}702$ & $312$ & $137.71$ & $131.14$ \\
+\midrule
+\textsf{SLH-DSA-128s} \FORS{}$(k{=}14, a{=}12)$ & $2{,}912$ & --- & $172{,}032$ & $190$ & $133.75$ & $125.86$ \\
+\textsf{SLH-DSA-128s} + \UFORS{}$(w{=}10, S{=}16, a_1{=}7, k{=}14)$ & $\mathbf{2{,}240}$ & $\mathbf{-672}$ & $\mathbf{57{,}334}$ & $270$ & $\mathbf{140.67}$ & $\mathbf{130.66}$ \\
+\textsf{SLH-DSA-128s} + \UFORS{}$(w{=}10, S{=}16, a_1{=}6, k{=}16)$ & $2{,}304$ & $-608$ & $\mathbf{32{,}757}$ & $293$ & $136.07$ & $123.94$ \\
+\midrule
+\textsf{SLH-DSA-128f} \FORS{}$(k{=}33, a{=}6)$ & $3{,}696$ & --- & $6{,}303$ & $240$ & $131.36$ & $122.27$ \\
+\textsf{SLH-DSA-128f} + \UFORS{}$(w{=}5, S{=}8, a_1{=}4, k{=}24)$ & $\mathbf{2{,}688}$ & $\mathbf{-1{,}008}$ & $6{,}511$ & $\mathbf{223}$ & $\mathbf{134.10}$ & $\mathbf{124.87}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:ufors-pareto} confirms by exact dynamic programming (zero Monte Carlo) that \UFORS{} strictly dominates \FORS{} across all three regimes without any counter grinding, forced pruning, or Octopus path deduplication.
+
+\section{The \BLINCS{} Construction}
+\label{sec:scheme}
+
+We summarize \BLINCS{} from the normative specification (\texttt{SPEC.md}) and our Lean~4 formalization (\texttt{formal/Blincs/Scheme.lean}). Table~\ref{tab:params} lists all parameters and exact BLAKE3 compression counts.
+
+\begin{table}[t]
+\centering
+\caption{\BLINCS{} parameters, encoded sizes, and exact deterministic BLAKE3 compression counts (zero counter grinding implies $\mathrm{p99} = \mathrm{mean} = \max$; all $1{,}440 = 45 \times 32$ \UFORS{} chains have equal length $9$).}
+\label{tab:params}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Parameter} & \textbf{Value} & \textbf{Derived Metric} & \textbf{Exact Value} \\
+\midrule
+Truncated node / salt $N$ & $16\text{ B}$ ($128$ bits) & \UFORS{} length & $1{,}920\text{ B}$ ($15 \times 128$) \\
+Hypertree layers $d$ & $7$ (uniform) & One hypertree layer & $640\text{ B}$ \\
+Uniform tree height $h_{\mathrm{tree}}$ & $5$ ($32$ leaves, HT \& \UFORS{}) & Signature size $|\sigma|$ & $\mathbf{6{,}432\text{ B}}$ ($8{,}576$ B64) \\
+Total hypertree height $h$ & $35$ ($2^{35}$ \UFORS{} leaves) & Verifying key $|\VK|$ & $32\text{ B}$ \\
+\WOTS{} base $w$, chains & $w = 16$, $32 + 3 = 35$ & Signing seed $|\mathsf{seed}|$ & $32\text{ B}$ \\
+\UFORS{} $(k, n, w, S, |\mathcal{C}|)$ & $(15, 3, 10, 16, 64)$ ($192\text{ B}$ LUT) & Top-tree RAM cache & $1\text{ KiB}$ ($32$ leaves) \\
+Tweak kinds & $6$ (unified HT \& \UFORS{}) & Cold sign (core) & $143{,}022$ comp. \\
+Max context $|\mathsf{ctx}|$ & $255\text{ B}$ & Warm sign (max / avg) & $125{,}343$ / $125{,}081$ \\
+Design budget $q_s$ & $2^{32}$ signatures & Verify (avg / max) & $2{,}194.5$ / $4{,}032$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Key Schedule and Unified Six-Kind Tweak Space}
+Given $\mathsf{seed} \in \mathcal{B}^{32}$, $\KeyGen(\mathsf{seed})$ derives $(\Ksec, \Ksalt, \KR, \pkseed)$ via $\Derive$ using six distinct UTF-8 contexts prefixed by \BLINCS{} (\texttt{2026-11-26}), sets $\Kpub = \Derive(\textsf{PUBLIC\_HASH}, \pkseed)$ and $\rootv = \mathsf{TreeRoot}(6, 0)$, and outputs $\VK = \pkseed \concat \rootv$. Verifiers derive $\Kpub$, $\rootv$, and $\Kcontent = \Derive(\textsf{CONTENT}, \VK)$.
+
+Every internal hash is domain-separated by the $16$-byte little-endian tweak
+\[
+  \tweak(\mathrm{kind}, \mathrm{layer}, \mathrm{tree}, \mathrm{leaf}, a, b)
+  = \mathrm{u8}(\mathrm{kind}) \concat \mathrm{u8}(\mathrm{layer}) \concat \mathrm{u48}(\mathrm{tree}) \concat \mathrm{u16}(\mathrm{leaf}) \concat \mathrm{u16}(a) \concat \mathrm{u32}(b).
+\]
+Because \UFORS{} trees reuse the exact same hash-chain and height-$5$ Merkle construction as the hypertree under strictly disjoint layer indices ($\mathrm{layer} \in \{0,\dots,6\}$ for hypertree layers vs.\ $\mathrm{layer} = 128 + \tau \in \{128,\dots,142\}$ for \UFORS{} tree $\tau$), \BLINCS{} needs only \emph{six} tweak kinds: \textsf{CHAIN\_SECRET} ($1$), \textsf{CHAIN} ($2$), \textsf{ONE\_TIME\_KEY} ($3$), \textsf{NODE} ($4$), \textsf{FEW\_ROOT} ($5$), and \textsf{MESSAGE} ($6$). For kinds $1$--$5$, $\ShortHash(K, T, X) = \Keyed(K, T \concat X)[..16]$. Figure~\ref{fig:tweak} shows how every \UFORS{} leaf hash ($16\text{ B tweak} + 3 \times 16\text{ B endpoints} = 64\text{ B}$) absorbs in \emph{one single} BLAKE3 compression.
+
+\begin{figure}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\footnotesize,
+  bytebox/.style={draw=navy, fill=boxbg, minimum height=0.70cm, align=center, inner sep=2pt},
+  blkbox/.style={draw=slate, fill=accentbg, minimum height=0.66cm, align=center, inner sep=2pt},
+  lbl/.style={font=\scriptsize\color{slate}}
+]
+\node[lbl, anchor=west] at (0, 1.35) {\textbf{(a) 16-byte little-endian tweak encoding} ($6$ kinds; $\mathrm{layer} \in 0..6$ for HT, $128..142$ for \UFORS{}):};
+\node[bytebox, minimum width=1.2cm] (k) at (0.6, 0.70) {\texttt{kind}\\{\scriptsize 1 B}};
+\node[bytebox, minimum width=1.3cm, right=0pt of k] (l) {\texttt{layer}\\{\scriptsize 1 B}};
+\node[bytebox, minimum width=3.9cm, right=0pt of l] (tr) {\texttt{tree} (u48 LE)\\{\scriptsize 6 B}};
+\node[bytebox, minimum width=1.8cm, right=0pt of tr] (lf) {\texttt{leaf} (u16)\\{\scriptsize 2 B}};
+\node[bytebox, minimum width=1.8cm, right=0pt of lf] (a) {\texttt{a} (u16)\\{\scriptsize 2 B}};
+\node[bytebox, minimum width=2.8cm, right=0pt of a] (b) {\texttt{b} (u32 LE)\\{\scriptsize 4 B}};
+
+\node[lbl, below=1pt of k] {0};
+\node[lbl, below=1pt of l] {1};
+\node[lbl, below=1pt of tr] {2..7};
+\node[lbl, below=1pt of lf] {8..9};
+\node[lbl, below=1pt of a] {10..11};
+\node[lbl, below=1pt of b] {12..15};
+
+\node[lbl, anchor=west] at (0, -0.45) {\textbf{(b) Exact single-block \texttt{KEYED\_HASH} absorption} (\UFORS{} \textsf{ONE\_TIME\_KEY}: $16 + 3 \times 16 = 64$~B exact):};
+\node[blkbox, fill=navy!12, draw=navy, minimum width=2.6cm] (iv) at (1.3, -1.10) {$\mathrm{CV}_0 = K_{\mathrm{pub}}$\\{\scriptsize 32 B (IV, 0 msg B)}};
+\node[blkbox, minimum width=2.3cm, right=0.55cm of iv] (t16) {$T$ (16 B)};
+\node[blkbox, minimum width=2.3cm, right=0pt of t16] (c0) {$x_{0,9}$ (16 B)};
+\node[blkbox, minimum width=2.3cm, right=0pt of c0] (c1) {$x_{1,9}$ (16 B)};
+\node[blkbox, minimum width=2.3cm, right=0pt of c1] (c2) {$x_{2,9}$ (16 B)};
+
+\draw[-{Stealth[length=2mm]}, navy, thick] (iv.east) -- (t16.west);
+\node[lbl, below=2pt of c1] {Exact $64$-byte BLAKE3 block $\implies$ $1$ compression $f_{\mathrm{B3}}$ (zero padding overhead!)};
+\end{tikzpicture}}
+\caption{BLINCS $16$-byte tweak encoding and exact single-block BLAKE3 absorption for \UFORS{} leaf hashing. Every \textsf{CHAIN\_SECRET} ($16$~B), \textsf{CHAIN} ($32$~B), \textsf{NODE} ($48$~B), and \UFORS{} \textsf{ONE\_TIME\_KEY} ($64$~B) executes in a single BLAKE3 compression.}
+\label{fig:tweak}
+\end{figure}
+
+\subsection{Two-Stage Single-Pass Content Hashing, \UFORS{}, and Hypertree}
+
+Figure~\ref{fig:arch} depicts the complete dataflow. Given fresh $\mathsf{draw} \in \mathcal{B}^{32}$, $\mathsf{ctx} \in \mathcal{B}^{\le 255}$ framed as $\framed(\mathsf{ctx}) = \mathrm{u8}(|\mathsf{ctx}|) \concat \mathsf{ctx}$, and $M \in \mathcal{B}^{< 2^{64}}$:
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+  \item \textbf{Stage 1 (pre-message salt and single-pass content hash):} $e = \Keyed(\Ksalt, \mathsf{draw})[..16]$, $\Kmsg = \Keyed(\Kcontent, e \concat \framed(\mathsf{ctx}))$, $\hmsg = \Keyed(\Kmsg, M)$, and $\mathsf{short} = e \concat \hmsg \in \mathcal{B}^{48}$.
+  \item \textbf{Stage 2 (hedged randomizer and LSB-first bit extraction):} $R = \Keyed(\KR, \mathsf{short} \concat \framed(\mathsf{ctx}))[..16]$ and $D = \Keyed(\Kpub, T_{\mathrm{MSG}} \concat R \concat \rootv \concat \mathsf{short} \concat \framed(\mathsf{ctx})) \in \mathcal{B}^{32}$. Treating $D$ as an LSB-first little-endian $256$-bit string, for each $\tau \in \{0,\dots,14\}$ extract $5$-bit leaf index $\ell_\tau$ at offset $11\tau$ and $6$-bit codeword index $u_\tau \in \{0,\dots,63\}$ at offset $11\tau + 5$, and extract $35$-bit $\leafaddr$ at offset $165$ ($200$ bits $= D[0..25]$ total).
+  \item \textbf{\UFORS{} ($15$ height-$5$ trees, $1{,}920$~B):} For each $\tau \in \{0,\dots,14\}$, instantiate the unified chain-and-Merkle primitive at $(\mathrm{layer} = 128 + \tau, \mathrm{tree} = \leafaddr)$ with $3$ chains of $9$ steps. Let $(d_0, d_1, d_2) = \mathcal{C}_{64}[u_\tau]$ ($\sum d_i = 16$). Emit $(x_{0,d_0}, x_{1,d_1}, x_{2,d_2})$ ($48$~B) and the $5$-node Merkle authentication path ($80$~B) of leaf $\ell_\tau$ to root $r_\tau$; set $\uforsroot = \ShortHash(\Kpub, T_{\textsf{FEW\_ROOT}}(\leafaddr), r_0 \concat \cdots \concat r_{14})$. Verification runs an exact constant $27 - 16 = 11$ chain steps per tree.
+  \item \textbf{Uniform $7 \times 5$ hypertree (\WOTS{}, $4{,}480$~B):} Starting from $\mathsf{node}_0 = \uforsroot$ and $\mathsf{addr}_0 = \leafaddr$, each layer $\ell \in \{0,\dots,6\}$ signs $\mathsf{node}_\ell$ with \WOTS{} ($w=16$, $32$ little-endian nibbles $+$ $3$ checksum nibbles $= 35$ chains of $15$ steps) at $(\ell, \lfloor \mathsf{addr}_\ell/32 \rfloor, \mathsf{addr}_\ell \bmod 32)$ and appends its $5$-node Merkle authentication path ($640$~B/layer). Verification succeeds iff $\mathsf{node}_7 = \rootv$ in constant time.
+\end{enumerate}
+
+\begin{figure}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\scriptsize,
+  box/.style={draw=navy, rounded corners=2pt, fill=boxbg, align=center, inner sep=4pt, minimum height=0.70cm},
+  kbox/.style={draw=slate, rounded corners=2pt, fill=accentbg, align=center, inner sep=3.5pt, minimum height=0.60cm},
+  arr/.style={-{Stealth[length=1.8mm]}, thick, navy},
+  darr/.style={-{Stealth[length=1.8mm]}, dashed, slate}
+]
+\node[kbox] (draw) at (0, 2.25) {$\mathsf{draw}$ (32 B)\\$\Ksalt$};
+\node[box, right=0.50cm of draw] (e) {$e = \Keyed(\Ksalt,\mathsf{draw})[..16]$\\{\color{slate}16 B salt (before reading $M$)}};
+\node[box, right=0.55cm of e] (kmsg) {$\Kmsg = \Keyed(\Kcontent, e \concat \framed(\mathsf{ctx}))$\\$\hmsg = \Keyed(\Kmsg, M)$ (1 pass)};
+
+\node[box, below=0.60cm of kmsg] (RD) {$R = \Keyed(\KR, e \concat \hmsg \concat \framed(\mathsf{ctx}))[..16]$\\$D = \Keyed(\Kpub, T_{\mathrm{MSG}} \concat R \concat \rootv \concat e \concat \hmsg \concat \framed(\mathsf{ctx}))$};
+\node[kbox, left=0.55cm of RD] (kr) {$\KR, \Kpub$\\$\rootv, \mathsf{ctx}$};
+
+\node[box, below=0.65cm of RD, xshift=-2.4cm, minimum width=4.9cm] (ufors) {\textbf{\UFORS{}(3, 10, 16, 64, 5, 15)} at $\leafaddr$\\15 height-5 trees ($32$ leaves, $3$ chains of len $9$)\\Constant $11$ verify steps/tree $\implies 1{,}920$~B + $\uforsroot$};
+
+\node[box, right=0.45cm of ufors, minimum width=5.4cm] (ht) {\textbf{Uniform $7 \times 5$ Hypertree} ($d=7, h_{\mathrm{tree}}=5$)\\Each layer $\ell \in \{0..6\}$: \WOTS{}$(w{=}16, 35\text{ chains})$\\+ 5-node Merkle auth path ($640$~B/layer)\\Layer 6 root $= \rootv \in \VK$ (16 B)};
+
+\node[kbox, fill=navy!8, draw=navy, below=0.52cm of $(ufors.south)!0.5!(ht.south)$, minimum width=10.8cm] (wire)
+  {\textbf{Encoded Signature $\sigma$ ($6{,}432$~B):}\quad $e$ (16 B) $\concat$ $R$ (16 B) $\concat$ \UFORS{} (1{,}920 B) $\concat$ Layer~0..6 ($7 \times 640 = 4{,}480$ B)};
+
+\draw[arr] (draw) -- (e);
+\draw[arr] (e) -- (kmsg);
+\draw[arr] (kmsg) -- node[right, font=\tiny] {$\mathsf{short} = e \concat \hmsg$} (RD);
+\draw[darr] (kr) -- (RD);
+\draw[arr] (RD.south) -- ++(0,-0.22) -| node[pos=0.25, above, font=\tiny] {$D[0..25]$ ($15\times 11 + 35 = 200$ b)} (ufors.north);
+\draw[arr] (ufors.east) -- node[above, font=\tiny] {$\uforsroot$} (ht.west);
+\draw[darr] (ufors.south) -- (ufors.south |- wire.north);
+\draw[darr] (ht.south) -- (ht.south |- wire.north);
+\end{tikzpicture}}
+\caption{End-to-end architecture of \BLINCS{} with \UFORS{}. Every tree in the entire scheme has height $5$ ($32$ leaves) and uses the same chain-and-Merkle primitive.}
+\label{fig:arch}
+\end{figure}
+
+\section{Machine-Checked Forgery Decomposition and Concrete $\EUFCMA$ Proof}
+\label{sec:formal}
+\label{sec:euf-cma}
+
+We formalized \BLINCS{} declaratively in Lean~4~\cite{lean4} (\texttt{formal/Blincs/}, Lean~4.36.0, zero external dependencies, zero \texttt{sorry}, zero custom axioms). Parameterized over an arbitrary abstract hash oracle $H = (\Keyed, \Derive)$, the Lean~4 development proves (checked via \texttt{\#print axioms}):
+\begin{itemize}[leftmargin=1.5em,itemsep=1pt]
+  \item \textbf{Tweak, layer-namespace, and context injectivity} (\texttt{encodeTweak\_\allowbreak injective}, \texttt{uforsLayerByte\_\allowbreak ne\_\allowbreak htLayer}, \texttt{frameContext\_\allowbreak prefix\_\allowbreak free}): all six tweak kinds serialize injectively into $16$~bytes, \UFORS{} layers $128..142$ never collide with hypertree layers $0..6$, and $\framed(\mathsf{ctx})$ is prefix-free for $|\mathsf{ctx}| \le 255$.
+  \item \textbf{Antichain and chain extraction} (\texttt{uforsCode\_\allowbreak sum}, \texttt{uforsCode\_\allowbreak antichain}, \texttt{wots\_\allowbreak dominance}, \texttt{chain\_\allowbreak forgery\_\allowbreak extract}): kernel-decided proof that every codeword in $\mathcal{C}_{64}$ sums to $16$ and forms a strict antichain; \WOTS{} dominance; and unified chain forgery extraction for arbitrary step length ($15$ for \WOTS{}, $9$ for \UFORS{}).
+  \item \textbf{Merkle soundness, completeness, and wire bijection} (\texttt{merkleReconstruct\_\allowbreak correct}, \texttt{merkle\_\allowbreak forgery\_\allowbreak collision}, \texttt{blincs\_\allowbreak completeness}, \texttt{encodeImprint\_\allowbreak length} $= 6{,}432$, \texttt{encodeImprint\_\allowbreak injective}).
+\end{itemize}
+
+\begin{theorem}[Machine-Checked Combinatorial Forgery Dichotomy]
+\label{thm:dichotomy}
+\raggedright
+(\texttt{Blincs.blincs\_forgery\_dichotomy}.) For any hash oracle $H$, $\mathsf{seed} \in \mathcal{B}^{32}$, honest query transcript $Q = \{(\mathsf{ctx}_j, M_j, \mathsf{draw}_j)\}_{j=1}^{q_s}$, and valid fresh forgery $(\mathsf{ctx}^*, M^*, \sigma^*)$ with $(\mathsf{ctx}^*, M^*) \notin \{(\mathsf{ctx}_j, M_j)\}$, at least one of twelve explicit witnesses holds:
+\begin{enumerate}[leftmargin=1.8em,itemsep=1pt,label=\textup{(\arabic*)}]
+  \item \textbf{\textsf{ContentHashSecondPreimage}:} $\exists j$: $e^* = e_j$, $\mathsf{ctx}^* = \mathsf{ctx}_j$, $M^* \neq M_j$, same $\hmsg$.
+  \item \textbf{\textsf{MessageDigestCollision}:} $\exists j$: $(R^*, \mathsf{short}^*, \mathsf{ctx}^*) \neq (R_j, \mathsf{short}_j, \mathsf{ctx}_j)$, same $D$.
+  \item \textbf{\textsf{HypertreeNodeSecondPreimage}:} distinct child pairs colliding under hypertree \textsf{NODE}.
+  \item \textbf{\textsf{OneTimeKeySecondPreimage}:} distinct $35$-endpoint vectors colliding under \textsf{ONE\_TIME\_KEY}.
+  \item \textbf{\textsf{WotsChainSecondPreimage}:} distinct inputs colliding under hypertree \textsf{CHAIN} ($s < 15$).
+  \item \textbf{\textsf{WotsChainPreimage}:} honest chain value $x_{c, d_c(m^*)}$ at $d_c(m^*) < d_c(m_{\mathrm{honest}})$ for $m^* \neq m_{\mathrm{honest}}$.
+  \item \textbf{\textsf{UforsRootSecondPreimage}:} distinct $15$-root tuples colliding under \textsf{FEW\_ROOT} at $\leafaddr^*$.
+  \item \textbf{\textsf{UforsNodeSecondPreimage}:} distinct child pairs colliding under \UFORS{} \textsf{NODE} ($\mathrm{layer} = 128 + \tau$).
+  \item \textbf{\textsf{UforsLeafSecondPreimage}:} distinct $3$-endpoint tuples colliding under \UFORS{} \textsf{ONE\_TIME\_KEY}.
+  \item \textbf{\textsf{UforsChainSecondPreimage}:} distinct inputs colliding under \UFORS{} \textsf{CHAIN} ($s < 9$).
+  \item \textbf{\textsf{UforsUnrevealedChainPreimage}:} exact honest chain value $x_{c, d^*}$ produced for some $(\leafaddr^*, \tau, \ell^*_\tau, c)$ never revealed at any depth $\le d^*$ in $Q$.
+  \item \textbf{\textsf{UforsCover}:} the exact $3$D lattice-meet cover condition Eq.~\eqref{eq:ufors-cover} holds across all $15 \times 3 = 45$ coordinates.
+\end{enumerate}
+\end{theorem}
+
+\subsection{Primary Security Analysis: Concrete $\EUFCMA$ Reduction Under Correct Use}
+
+Under correct use (unique unpredictable salt $e_j$ per signature, secret $\mathsf{seed}$, $q_s \le 2^{32}$), lifting Theorem~\ref{thm:dichotomy} through the standard six-game hybrid sequence (Figure~\ref{fig:games}) yields:
+
+\begin{figure}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\scriptsize,
+  gbox/.style={draw=navy, rounded corners=2pt, fill=boxbg, align=center, inner sep=4pt, minimum width=2.40cm, minimum height=0.92cm},
+  rbox/.style={draw=slate, rounded corners=2pt, fill=accentbg, align=center, inner sep=3pt, minimum width=2.25cm},
+  arr/.style={-{Stealth[length=1.8mm]}, thick, navy}
+]
+\node[gbox] (g0) at (0,0) {\textbf{Game $G_0$}\\Real $\EUFCMA$};
+\node[gbox, right=0.52cm of g0] (g1) {\textbf{Game $G_1$}\\True random\\keys \& secrets};
+\node[gbox, right=0.52cm of g1] (g2) {\textbf{Game $G_2$}\\Fresh random\\$e_j, R_j$ (no coll.)};
+\node[gbox, right=0.52cm of g2] (g3) {\textbf{Game $G_3$}\\Abort on\\Events (1)--(2)};
+\node[gbox, below=0.82cm of g3] (g4) {\textbf{Game $G_4$}\\Abort on HT\\Events (3)--(6)};
+\node[gbox, left=0.52cm of g4] (g5) {\textbf{Game $G_5$}\\Abort on \UFORS{}\\Events (7)--(11)};
+\node[gbox, fill=navy!10, left=0.52cm of g5] (g6) {\textbf{Game $G_6$}\\Pure \UFORS{} \ITSR{}\\Event (12)};
+\node[rbox, left=0.52cm of g6] (lean) {\textbf{Lean~4 Dichotomy}\\Thm.~\ref{thm:dichotomy} proves\\$\neg(1\text{--}11) \Rightarrow (12)$};
+
+\draw[arr] (g0) -- node[above, font=\tiny] {$\PRF$} (g1);
+\draw[arr] (g1) -- node[above, font=\tiny] {$\PRF + \frac{q_s^2}{2^{129}}$} (g2);
+\draw[arr] (g2) -- node[above, font=\tiny] {$\MeSPR$} (g3);
+\draw[arr] (g3) -- node[right, font=\tiny] {$\SMTCR + \WOTS{}$} (g4);
+\draw[arr] (g4) -- node[above, font=\tiny] {$\SMTCR + \SMDSPR$} (g5);
+\draw[arr] (g5) -- node[above, font=\tiny] {exact} (g6);
+\draw[{Stealth[length=1.8mm]}-, dashed, slate, thick] (g6) -- (lean);
+\end{tikzpicture}}
+\caption{Six-game $\EUFCMA$ reduction grounded in the machine-checked Lean~4 forgery dichotomy.}
+\label{fig:games}
+\end{figure}
+
+\begin{theorem}[Concrete $\EUFCMA$ Security of \BLINCS{} Under Correct Use]
+\label{thm:euf-cma}
+For any adversary $\mathcal{A}$ making at most $q_s$ adaptive signing queries against \BLINCS{}, there exist explicit black-box adversaries $\mathcal{B}_1,\dots,\mathcal{B}_{10}$ running in time $\approx t_{\mathcal{A}}$ (plus signing simulation) such that
+\begin{align}
+  \Adv^{\EUFCMA}_{\BLINCS}(\mathcal{A}) \;\le\;&
+    \Adv^{\PRF}_{\Derive}(\mathcal{B}_1)
+    + \Adv^{\PRF}_{\Ksec}(\mathcal{B}_2)
+    + \Adv^{\PRF}_{\Ksalt}(\mathcal{B}_3)
+    + \Adv^{\PRF}_{\KR}(\mathcal{B}_4)
+    + \frac{q_s(q_s - 1)}{2^{129}} \nonumber\\
+  & + \Adv^{\MeSPR}_{\mathrm{content}, q_s}(\mathcal{B}_5)
+    + \Adv^{\SMTCR}_{D, q_s}(\mathcal{B}_6)
+    + \Adv^{\SMTCR}_{\mathsf{HT}, p_{\mathrm{ht}}}(\mathcal{B}_7) \nonumber\\
+  & + (d + 1)\bigl(\Adv^{\SMDSPR}_{\mathsf{CHAIN}, p_c}(\mathcal{B}_8') + \Adv^{\SMTCR}_{\mathsf{CHAIN}, p_c}(\mathcal{B}_8'') + 35\cdot 2^{-128}\bigr) \nonumber\\
+  & + \Adv^{\SMTCR}_{\UFORS, p_{\mathrm{u}}}(\mathcal{B}_9)
+    + \Adv^{\ITSR}_{\mathcal{C}_{64}, q_s}(\mathcal{B}_{10}),
+\label{eq:euf-cma}
+\end{align}
+where $d = 7$, $p_{\mathrm{ht}} \le 224\, q_s$, $p_c \le 13{,}485\, q_s$, and $p_{\mathrm{u}} \le 946\, q_s$.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+$G_0 \to G_1$ replaces derived secret keys and all \WOTS{}/\UFORS{} chain starts $x_{c,0}$ with independent uniform values via $\PRF$ (using \texttt{key\_\allowbreak contexts\_\allowbreak distinct} and \texttt{encodeTweak\_\allowbreak injective}). $G_1 \to G_2$ replaces $e_j$ and $R_j$ with fresh uniform $16$-byte strings, aborting on salt collision ($q_s(q_s-1)/2^{129}$). $G_2 \to G_3$ aborts on Events~(1)--(2) ($\MeSPR$ on freshly salted $\Kmsg^{(j)}$, and $\SMTCR$ on $D$). Because \UFORS{} uses the \emph{exact same} hash-chain primitive as \WOTS{}, both hypertree Events~(3)--(6) ($G_3 \to G_4$) and \UFORS{} Events~(7)--(11) ($G_4 \to G_5$) reduce uniformly to $\SMTCR$ on \textsf{NODE}/\textsf{ONE\_TIME\_KEY}/\textsf{FEW\_ROOT}/\textsf{CHAIN} plus Hülsing--Kudinov $\SMDSPR$~\cite[Theorem~2]{hulsing2022sphincsplus} for chain inversion strictly before the earliest revealed step (Event~(6) for hypertree chains, Event~(11) for \UFORS{} chains). Finally, by Theorem~\ref{thm:dichotomy}, $\neg(1\text{--}11)$ implies Event~(12) (\textsf{UforsCover}), identically the $\ITSR_{\mathcal{C}_{64}, q_s}$ game ($G_6$).
+\end{proof}
+
+\subsection{Exact Dynamic-Programming Evaluation of \UFORS{} \ITSR{}}
+
+Under ideal hashes, $R \sim \mathrm{Binomial}(q_s, 2^{-35})$ prior queries land on any candidate address $\leafaddr^*$. Conditioned on $R = r$, the number of those $r$ queries landing on target leaf $\ell^*_\tau \in \{0,\dots,31\}$ in tree $\tau$ is $M \sim \mathrm{Binomial}(r, 1/32)$, so a single \UFORS{} tree is covered with exact probability $p_{\mathrm{tree}}(r) = \sum_{m=1}^{r} \binom{r}{m} (1/32)^m (31/32)^{r-m}\, q_{\mathcal{C}_{64}}(m)$, where $q_{\mathcal{C}_{64}}(m)$ is evaluated to machine precision by exact dynamic programming over the $10^3 = 1{,}000$ lattice-meet states $(m_0, m_1, m_2) \in \{0,\dots,9\}^3$ ($q(1)=1/64$, $q(2)=0.219917$, $q(3)=0.394149$, $q(4)=0.518049$). Summing over $r \ge 1$ gives
+\begin{equation}
+  p_{\mathrm{cover}}(q_s) \;=\; \sum_{r=1}^{q_s} \binom{q_s}{r} \left(\frac{1}{2^{35}}\right)^r \left(1 - \frac{1}{2^{35}}\right)^{q_s - r} p_{\mathrm{tree}}(r)^{15}.
+\label{eq:itsr-exact}
+\end{equation}
+Table~\ref{tab:itsr} evaluates $-\log_2 p_{\mathrm{cover}}(q_s)$ exactly across both correct-use ($q_s \le 2^{32}$) and overuse ($q_s > 2^{32}$) regimes.
+
+\begin{table}[t]
+\centering
+\caption{Exact single-query \ITSR{} cover exponent $-\log_2 p_{\mathrm{cover}}(q_s)$ under correct use ($\le q_{\max}$) and overuse ($> q_{\max}$).}
+\label{tab:itsr}
+\footnotesize
+\begin{tabular}{@{}lccccccc@{}}
+\toprule
+\textbf{Scheme} & $q_{\max}$ & $\tfrac{1}{2} q_{\max}$ & $q_{\max}$ & $2 q_{\max}$ & $4 q_{\max}$ & $8 q_{\max}$ & $16 q_{\max}$ \\
+\midrule
+\textbf{\BLINCS{} (\UFORS{}, $6{,}432$~B)} & $2^{32}$ & $143.91$ & $\mathbf{138.48}$ & $\mathbf{132.13}$ & $\mathbf{124.73}$ & $\mathbf{116.05}$ & $105.83$ \\
+Superseded \BLINCS{} (\FORS{}, $7{,}392$~B) & $2^{32}$ & $139.39$ & $134.46$ & $128.85$ & $122.39$ & $114.90$ & $106.18$ \\
+\textsf{SLH-DSA-128s} (\FORS{}, $7{,}856$~B) & $2^{64}$ & $140.51$ & $133.75$ & $125.86$ & $116.72$ & $106.12$ & $93.80$ \\
+\textsf{SLH-DSA-128f} (\FORS{}, $17{,}088$~B) & $2^{64}$ & $138.94$ & $131.36$ & $122.27$ & $111.86$ & $99.83$ & $85.81$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Attacker-Generous Reduction to Plain BLAKE3 Second-Preimage Resistance}
+\label{sec:generous}
+
+\begin{lemma}[Preimage-to-Second-Preimage Bridge for $n$-to-$n$ Random Maps]
+\label{lem:ow-to-2pr}
+Let $f: \mathcal{B}^{16} \to \mathcal{B}^{16}$ satisfy $\Prob_{x \getsr \mathcal{B}^{16}}[|\,f^{-1}(f(x))\,| \ge 2] \ge \delta$ ($\delta \to 1 - e^{-1} \approx 0.6321$ for a random map). If $\mathcal{I}(f(x))$ outputs $x'$ with $f(x') = f(x)$ with probability $\varepsilon$, then $(x, x')$ is a genuine second preimage ($x' \neq x$) with probability at least $\frac{\delta}{2}\,\varepsilon - \Adv^{\SMDSPR} \approx 0.316\,\varepsilon$.
+\end{lemma}
+
+\begin{proof}
+Conditioned on $y = f(x)$ and $|f^{-1}(y)| \ge 2$, the hidden preimage $x$ is uniform over $f^{-1}(y)$, so $\Prob[x' \neq x \mid f(x') = y \land |f^{-1}(y)| \ge 2] \ge 1/2$. Any correlation between $\mathcal{I}$'s success and fiber size directly violates $\SMDSPR$~\cite{hulsing2022sphincsplus}.
+\end{proof}
+
+\begin{theorem}[Attacker-Generous Reduction to Keyed-BLAKE3 Second-Preimage Resistance]
+\label{thm:generous-2pr}
+Consider the generous model $\mathcal{G}_{\mathrm{gen}}$ in which chain starts are uniform random $16$-byte strings and the adversary $\mathcal{A}$ is handed $(\Ksalt, \KR)$ plus every public intermediate node of every queried subtree. Let $\varepsilon_{\mathrm{nc}}$ be $\mathcal{A}$'s probability of outputting a fresh valid \BLINCS{} forgery satisfying $\neg\textsf{UforsCover}$. Then an explicit reduction $\mathcal{R}$ outputs a concrete keyed-BLAKE3 second preimage $(K, u \neq v, \Keyed(K,u)[..m] = \Keyed(K,v)[..m])$ ($m \in \{16, 32\}$):
+\begin{enumerate}[leftmargin=1.5em,itemsep=1pt]
+  \item \textbf{Multi-target keyed-BLAKE3 $\DMSPR$/$\SMTCR$ (tight):} across $N_{\mathrm{tgt}} \le 14{,}655\, q_s$ queried targets with probability $\ge \frac{\delta}{2}\,\varepsilon_{\mathrm{nc}} - \Adv^{\SMDSPR} \approx 0.316\,\varepsilon_{\mathrm{nc}}$ (and $1 \cdot \varepsilon_{\mathrm{coll}}$ on direct collision branches (1)--(5) and (7)--(10)).
+  \item \textbf{Single-target plain BLAKE3 $\SPR$ (explicit guessing loss):} embedding a single challenge $(K^*, x^*)$ into one uniformly guessed slot wins single-target $\SPR$ with probability $\ge \frac{\delta}{2\, N_{\mathrm{tgt}}}\,\varepsilon_{\mathrm{nc}} - \frac{\Adv^{\SMDSPR}}{N_{\mathrm{tgt}}}$.
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+$\mathcal{R}$ simulates $\mathcal{G}_{\mathrm{gen}}$ exactly. By Theorem~\ref{thm:dichotomy}, any non-cover forgery yields one of Events~(1)--(11). Events~(1)--(5) and~(7)--(10) directly supply a second preimage $v \neq u$ against the honest input $u$ known to $\mathcal{R}$. Events~(6) and~(11) invert a \WOTS{} or \UFORS{} chain step strictly before the earliest revealed position $d_{\min}$: advancing the forged value to step $d_{\min} - 1$ yields a preimage of the publicly revealed $x_{d_{\min}}$ under a $16$-to-$16$-byte \textsf{CHAIN} call, which converts to a genuine second preimage via Lemma~\ref{lem:ow-to-2pr}. Single-target guessing over $N_{\mathrm{tgt}}$ slots yields~(2).
+\end{proof}
+
+\section{Secondary Security Analysis: Incorrect Use (\texttt{saltseed} Failure \& Overuse)}
+\label{sec:rng-fallback}
+
+When used incorrectly (while the signing $\mathsf{seed}$ remains secret), \BLINCS{} degrades gracefully rather than catastrophically:
+
+\begin{theorem}[Two-Stage Salt-Failure Hedged Fallback, \texttt{rng\_failure\_hedged\_fallback}]
+\label{thm:rng-fallback}
+Suppose the salt source (\texttt{saltseed}) is completely stuck or leaked so the exact same $\mathsf{draw}$ (hence the same salt $e$) is reused across two distinct pairs $(\mathsf{ctx}_1, M_1) \neq (\mathsf{ctx}_2, M_2)$ with $|\mathsf{ctx}_i| \le 255$. Then either:
+\begin{enumerate}[leftmargin=1.5em,itemsep=1pt]
+  \item $\mathsf{ctx}_1 = \mathsf{ctx}_2$, $M_1 \neq M_2$, and $\Keyed(\Kmsg, M_1) = \Keyed(\Kmsg, M_2)$ (a $256$-bit keyed-BLAKE3 collision, $\approx 128$-bit security); or
+  \item $\mathsf{short}_1 \concat \framed(\mathsf{ctx}_1) \neq \mathsf{short}_2 \concat \framed(\mathsf{ctx}_2)$, so $R_1, R_2$ remain independent pseudorandom outputs of secret-keyed $\KR$ and \UFORS{}/hypertree hedging stays intact.
+\end{enumerate}
+Moreover, re-signing the exact same $(\mathsf{ctx}, M)$ with a stuck $e$ deterministically reproduces the identical signature, revealing zero additional \UFORS{} chains or leaves.
+\end{theorem}
+
+On overuse ($q_s > 2^{32}$), Table~\ref{tab:itsr} shows no sharp cliff: \BLINCS{} with \UFORS{} retains $132.13$~bits at $2^{33}$, $124.73$~bits at $2^{34}$, $116.05$~bits at $2^{35}$ ($8\times$ over budget, still stronger than standard \FORS{}), and $79.89$~bits at $2^{38}$ ($64\times$ over budget).
+
+\section{Comparison and Theorem Lifting with \SPHINCS{} / FIPS~205}
+\label{sec:comparison}
+
+Tables~\ref{tab:compare} and~\ref{tab:lifting} compare \BLINCS{} with NIST FIPS~205 \SLHDSA{}~\cite{bernstein2019sphincsplus,hulsing2022sphincsplus,nist2024fips205}. Every core reduction step of Hülsing and Kudinov~\cite{hulsing2022sphincsplus}---hypertree induction, $\SMDSPR$ chain tightness, and $\PRF$ secret-key replacement---transfers verbatim to \BLINCS{}, and in fact becomes \emph{more uniform} under \UFORS{} because both \UFORS{} and the hypertree share one chain-and-Merkle primitive. Conversely, our abstract-oracle Lean~4 dichotomy (\texttt{blincs\_forgery\_dichotomy}) lifts back to \SLHDSA{} by instantiating big-endian nibbles and $(h=63, d=7, k=14, a=12)$.
+
+\begin{table}[t]
+\centering
+\caption{Side-by-side structural comparison: \BLINCS{} (\UFORS{}) vs.\ NIST FIPS~205 \SLHDSA{} 128-bit suites.}
+\label{tab:compare}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Property} & \textbf{\BLINCS{} (\UFORS{})} & \textbf{\textsf{SLH-DSA-SHA2-128s}} & \textbf{\textsf{SLH-DSA-SHAKE-128s}} \\
+\midrule
+Primitive & BLAKE3 (\texttt{Keyed}/\texttt{Derive}) & SHA-256 + MGF1 & SHAKE256 (Keccak) \\
+Security $N$ / $|\VK|$ & $16\text{ B}$ / $32\text{ B}$ & $16\text{ B}$ / $32\text{ B}$ & $16\text{ B}$ / $32\text{ B}$ \\
+Hypertree $(h, d, h/d)$ & $(35, 7, 5)$ ($32$ leaves) & $(63, 7, 9)$ ($512$ leaves) & $(63, 7, 9)$ ($512$ leaves) \\
+Bottom FTS & \UFORS{}$(3,10,16,64,5,15)$ & \FORS{}$(a{=}12, k{=}14)$ & \FORS{}$(a{=}12, k{=}14)$ \\
+Signature size $|\sigma|$ & $\mathbf{6{,}432\text{ B}}$ & $7{,}856\text{ B}$ & $7{,}856\text{ B}$ \\
+Budget $q_{\max}$ (\ITSR{}) & $2^{32}$ ($\mathbf{138.48}$~b) & $2^{64}$ ($133.75$~b) & $2^{64}$ ($133.75$~b) \\
+Tweakable hash $\mathsf{Th}$ & $\Keyed(\Kpub, T \concat X)[..16]$ & $\mathsf{SHA256}(P_0 \concat \mathsf{ADRS}^c \concat X)$ & $\mathsf{SHAKE256}(P \concat \mathsf{ADRS} \concat X)$ \\
+Single-block $2$-to-$1$? & \textbf{Yes} ($48\text{ B} \le 64\text{ B}$) & No ($2$ comp.) & Yes ($136\text{ B}$ rate) \\
+Hedged msg passes & \textbf{1 pass} (two-stage $e, R$) & 2 passes ($R$, then $H_{\mathrm{msg}}$) & 2 passes ($R$, then $H_{\mathrm{msg}}$) \\
+Top-tree cache RAM & $\mathbf{1\text{ KiB}}$ ($32$ leaves) & $16\text{ KiB}$ ($512$ leaves) & $16\text{ KiB}$ ($512$ leaves) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Bidirectional theorem-lifting matrix between \SPHINCS{} / FIPS~205 and \BLINCS{}.}
+\label{tab:lifting}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{} >{\raggedright\arraybackslash}p{3.4cm} >{\raggedright\arraybackslash}p{2.3cm} >{\raggedright\arraybackslash}p{8.8cm} @{}}
+\toprule
+\textbf{Proof Component} & \textbf{Lift Status} & \textbf{Technical Assessment \& Direction} \\
+\midrule
+\WOTS{} dominance + $\SMDSPR$~\cite{hulsing2022sphincsplus} &
+  \textbf{Verbatim} ($\leftrightarrow$) &
+  Identical $(w{=}16, \ell{=}35, n{=}16)$ combinatorics; LE vs.\ BE nibbles preserve \texttt{wots\_dominance}; extends directly to \UFORS{} chains ($w{=}10, n{=}3$). \\
+\addlinespace[2pt]
+Hypertree induction ($d{=}7$) &
+  \textbf{Verbatim} ($\leftrightarrow$) &
+  Top-down layer induction into \textsf{NODE}/\textsf{ONE\_TIME\_KEY} $\SMTCR$ + \WOTS{} transfers verbatim ($h/d = 5$ vs.\ $9$). \\
+\addlinespace[2pt]
+FTS + $\ITSR$ cover bound &
+  \textbf{Bridged} ($\leftrightarrow$) &
+  \UFORS{} generalizes \FORS{} $\ITSR$ to the $3$D lattice-meet cover condition Eq.~\eqref{eq:ufors-cover}, evaluated exactly via DP (Table~\ref{tab:ufors-pareto}). \\
+\addlinespace[2pt]
+$\PRF$ secret-key hybrid &
+  \textbf{Verbatim} ($\leftrightarrow$) &
+  Six globally injective tweak kinds + disjoint layer spaces ($0..6$ vs.\ $128..142$) replace $\Ksec$ outputs with uniform secrets identically. \\
+\addlinespace[2pt]
+Lean~4 dichotomy (Thm.~\ref{thm:dichotomy}) &
+  \textbf{Bridged} ($\text{BLINCS}\!\to\!\text{SLH}$) &
+  Abstract-oracle decomposition lifts back to \SLHDSA{} by swapping nibble endianness and setting $n=1, w=1$ in the FTS leaf. \\
+\addlinespace[2pt]
+Message hashing ($H_{\mathrm{msg}}$ vs.\ $e, R, D$) &
+  \textbf{Bridged} ($\leftrightarrow$) &
+  Adds Stage-1 $\MeSPR$ + salt-collision term ($q_s^2/2^{129}$) plus salt-failure fallback bridge (Thm.~\ref{thm:rng-fallback}). \\
+\addlinespace[2pt]
+Preimage $\to$ 2PR bridge (Thm.~\ref{thm:generous-2pr}) &
+  \textbf{Bridged} ($\leftrightarrow$) &
+  Applies to any $16$-to-$16$-byte tweakable hash (\textsf{simple} SHA2/SHAKE or keyed BLAKE3) via fiber-size $\SMDSPR$. \\
+\addlinespace[2pt]
+Compression ($f_{\mathrm{B3}}$ vs.\ SHA2/Keccak) &
+  \textbf{Non-lifting} &
+  $\SMTCR$, $\SMDSPR$, and $\MeSPR$ of $7$-round keyed BLAKE3 (and $128$-bit truncation) require independent cryptanalysis. \\
+\addlinespace[2pt]
+Signing budget ($2^{32}$ vs.\ $2^{64}$) &
+  \textbf{Non-lifting} &
+  BLINCS enforces operational adherence to $q_s \le 2^{32}$ (gracefully retaining $116.05$~b even at $2^{35}$, Table~\ref{tab:itsr}). \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Related Work and Open Problems}
+\label{sec:related}
+
+Hash-based signatures trace to Lamport~\cite{lamport1979constructing}, Merkle~\cite{merkle1989certified}, XMSS~\cite{buchmann2011xmss}, WOTS+~\cite{hulsing2013wotsplus}, SPHINCS~\cite{bernstein2015sphincs}, \SPHINCS{}~\cite{bernstein2019sphincsplus,hulsing2022sphincsplus}, and FIPS~205~\cite{nist2024fips205}. For one-time signatures, Bos and Chaum~\cite{bos1992csum} and Zhang, Cui, and Yu~\cite{zhang2023csum} established size optimality of middle-layer constant-sum \WOTS{}, and Khovratovich, Kudinov, and Wagner~\cite{khovratovich2025hypercube} used upper hypercube layers to cut $1$-time verification work. For few-time signatures, a rapid 2025--2026 wave shrunk \SPHINCS{} signatures via forced pruning (\textsf{PORS+FP}~\cite{abri2025porsfp}), bucket thinning (\textsf{BPORS+FP}~\cite{ren2026bporsfp}), single-chain constant-sum leaves with blockwise forced pruning (\textsf{BPORS-C+BFP}~\cite{wang2026bporsc}), and DAG guarded sharing with rejection sampling (\textsf{BGS-CC}~\cite{ren2026bgscc}), alongside constrained-device budget explorations by Project~11~\cite{deegan2026cuts,sphincspe2026}. \UFORS{} occupies a distinct, maximally simple point on this frontier: \emph{zero} counter grinding or forced pruning, \emph{fixed} wire length, $100\%$ equal-length SIMD chains, uniform height-$5$ Merkle trees, and co-located $n=3$ upper-layer lattice shaping.
+
+We also note the relationship to hash-based STARK / proximity-gap proof systems (FRI, Basefold, STIR, WHIR~\cite{skatharoudis2026sok}). Recent disproofs of beyond-Johnson proximity-gap conjectures~\cite{crites2025proxgaps} and binary additive-domain counterexamples~\cite{dao2026binaryproxgaps} underscore the value of \BLINCS{}'s unconditional exact combinatorial bounds; meanwhile, hash-based STARKs remain orthogonal as a future \emph{batch-aggregation} layer above thousands of individual \BLINCS{} signatures. On implementation assurance, our specification recommends sub-millisecond startup self-tests following Ferguson, Schneier, and Kohno~\cite{ferguson2010cryptography}.
+
+\paragraph{Open problems.}
+(1)~Independent human cryptanalysis of our reductions and $128$-bit truncated $7$-round keyed BLAKE3 under $\SMTCR$/$\SMDSPR$; (2)~mechanized probabilistic game-hopping in Lean~4; (3)~full multi-user $\EUFCMA$ proof across $U$ signets sharing $\pkseed \in \mathcal{B}^{16}$; and (4)~formal QROM lifting~\cite{don2022qrom} for \UFORS{} and two-stage content hashing (noting that we do not claim Grover search improves total physical quantum preimage cost over classical brute force).
+
+\bibliographystyle{abbrv}
+\bibliography{blincs}
+
+\end{document}

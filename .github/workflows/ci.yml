@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust-reference:
+    name: Rust reference (fmt, clippy, doc, vectors)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: reference
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
+      - run: cargo test --release --locked
+
+  lean4-formal:
+    name: Lean 4 formalization (zero sorry, zero custom axioms)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: formal
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install elan and pinned Lean 4 toolchain
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Build and verify zero sorryAx / zero custom axioms
+        run: |
+          lake build
+          lake env lean --stdin <<'LEAN' > /tmp/axioms.txt
+          import Blincs
+          #print axioms Blincs.encodeTweak_injective
+          #print axioms Blincs.uforsLayerByte_ne_htLayer
+          #print axioms Blincs.frameContext_prefix_free
+          #print axioms Blincs.uforsCode_sum
+          #print axioms Blincs.uforsCode_antichain
+          #print axioms Blincs.wots_dominance
+          #print axioms Blincs.chain_forgery_extract
+          #print axioms Blincs.merkleReconstruct_correct
+          #print axioms Blincs.merkle_forgery_collision
+          #print axioms Blincs.blincs_completeness
+          #print axioms Blincs.encodeImprint_length
+          #print axioms Blincs.encodeImprint_injective
+          #print axioms Blincs.blincs_forgery_dichotomy
+          #print axioms Blincs.rng_failure_hedged_fallback
+          LEAN
+          cat /tmp/axioms.txt
+          if grep -E 'sorryAx|Lean\.ofReduceBool|Lean\.trustCompiler' /tmp/axioms.txt; then
+            echo "ERROR: unexpected axiom or sorryAx found!"
+            exit 1
+          fi
