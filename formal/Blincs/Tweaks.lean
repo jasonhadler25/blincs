@@ -83,7 +83,7 @@ private theorem encodeLE_succ (x m : Nat) :
     | zero => simp [encodeLE, leByte]
     | succ j => simp [encodeLE, leByte, Nat.pow_succ', Nat.div_div_eq_div_mul]
 
-private theorem decodeLE_encodeLE (m : Nat) : ∀ x < 256 ^ m, decodeLE (encodeLE x m) = x := by
+theorem decodeLE_encodeLE (m : Nat) : ∀ x < 256 ^ m, decodeLE (encodeLE x m) = x := by
   induction m with
   | zero =>
     intro x hx

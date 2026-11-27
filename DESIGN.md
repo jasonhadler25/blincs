@@ -2,7 +2,7 @@
 
 *Thanks to the [Project 11](https://research.projecteleven.com/) research team — **Conor Deegan** (direct review of `SPEC.md`, constrained-device-first parameter search inspiration, SLH-DSA-B with **julienif**, THINCS, CUTS, and the SHRINCS review with **Alex Pruden**), **Alessandro Baiocchi, Matteo Vena, and Matteo Vicari** ([SPHINCS+ Parameter Explorer](https://research.projecteleven.com/tools/sphincs-parameter), [SPHINCS-G benchmarks](https://research.projecteleven.com/articles/sphincs-g-benchmarks), and [taller cached top-tree work](https://research.projecteleven.com/articles/raising-sphincs-lifetime-budgets)), and **Jamie Judd, Louis Tajan, and Furkan Akal** (CUTS) — as well as the authors of BLAKE3, `blake3-servil-core`, SPHINCS/SPHINCS+/FIPS 205, WOTS+C, PORS+FP, Gravity-SPHINCS, and the randomness papers credited in [`README.md`](README.md#credits-and-thanks) and Section 4 below.*
 
-This document records **why** the **BLINCS** (`BLINCS-128-A2`) signature algorithm and **Signet** (`jasonhadler25/signet`, the production Rust implementation of `BLINCS-128-A2`) are shaped the way they are: the threat model, the $2^{32}$ signature budget, the hard black-box bounds we proved on stateless BLAKE3 signatures, the two-pillar redesign (**`S-WOTS+Z`** constant-sum Sperner hypertree with a `128 KiB` cached top tree + zero-ROM **`U-PORS`** single-tree Octopus few-time signature) targeting **`≤ 5.0 s` `p99` warm signing on a `160 MHz` Cortex-M33** (e.g., Nitrokey 3 / Trezor Safe 5 — modeled, not measured on Cortex-M hardware) while hitting **`3,292` bytes** (`4,392` B Base64, **2.39× smaller than `SLH-DSA-128s`**), every candidate technique we evaluated and why each was adopted or declined, the single-pass salted content hash, the lock-free state file, and the crash-only engineering choices. For the normative byte-level definition, see [`SPEC.md`](SPEC.md); for the full combinatorial ledger, see [`paper/RESEARCH_NOTES.md`](paper/RESEARCH_NOTES.md); for the companion security proof, see [`paper/blincs.pdf`](paper/blincs.pdf); for the original strategy note that launched the project, see [`docs/history/manifesto.md`](docs/history/manifesto.md).
+This document records **why** the **BLINCS** (`BLINCS-128-A2`) signature algorithm and **Signet** (`jasonhadler25/signet`, the production Rust implementation of `BLINCS-128-A2`) are shaped the way they are: the threat model, the $2^{32}$ signature budget, the design-space bounds on stateless BLAKE3 signatures, the two-pillar redesign (**`S-WOTS+Z`** constant-sum Sperner hypertree with a `128 KiB` cached top tree + zero-table **`U-PORS`** single-tree Octopus few-time signature) targeting **`≤ 5.0 s` `p99` warm signing on a `160 MHz` Cortex-M33** (e.g., Nitrokey 3 / Trezor Safe 5 — modeled, not measured on Cortex-M hardware) while hitting **`3,292` bytes** (`4,392` B Base64, **2.39× smaller than `SLH-DSA-128s`**), the exact capped-history `U-PORS` certification (`tools/upors_cert.rs`), the equal-budget `q = 2^{64}` scientific comparison baselines (`BLINCS-128-64` / `BLINCS-128-64s`), every candidate technique we evaluated and why each was adopted or declined, the single-pass salted content hash, the lock-free state file, and the crash-only engineering choices. For the normative byte-level definition, see [`SPEC.md`](SPEC.md); for the companion security proof and full tables, see [`paper/blincs.pdf`](paper/blincs.pdf); for the original strategy note that launched the project, see [`docs/history/manifesto.md`](docs/history/manifesto.md).
 
 ---
 
@@ -15,8 +15,8 @@ BLINCS is designed for a dishonest submitter who does **not** hold the signing k
 - spend enormous classical compute (a 128-bit security target; BLAKE3 itself claims 128-bit security).
 
 Security-analysis priorities:
-1. **Primary:** correct use — unique unpredictable salt per imprint, $< 2^{32}$ imprints per signet, secret `seed`.
-2. **Secondary:** cheap mitigations for stuck or leaked salt randomness (`saltseed`) or modest overuse (`2^{33}` imprints).
+1. **Primary:** correct use — unique unpredictable salt per imprint, `< 2^{32}` imprints per signet, secret `seed` (classical single-user 128-bit target; physical CRQC hash-collision costs per Bernstein SHARCS 2009; QROM and multi-user proofs noted as open work).
+2. **Secondary:** cheap mitigations for stuck or leaked salt randomness (`saltseed`) or modest overuse (`2^{33}` imprints: `125.48 b` 99% LCB).
 3. **Out of scope:** predictable or leaked `seed`.
 
 The design goals that follow:
@@ -25,39 +25,41 @@ The design goals that follow:
 - **100% pure stateless (no synchronized one-time signing state):** a signing key can be copied across machines, restored from backups, or run in short-lived processes (such as `git commit`) without XMSS/LMS or hybrid stateful rollback hazards.
 - **Short verifying key (`32` bytes):** small enough to embed directly in a name or identifier a user already acquires (for example, a repository or branch name).
 - **Compact fixed-size signatures (`3,292` bytes / `4,392` bytes Base64):** **2.39× smaller** than `SLH-DSA-128s` (`7,856 B`) and **5.19× smaller** than `SLH-DSA-128f` (`17,088 B`), regardless of whether the signed message is 0 bytes or 100 GiB.
-- **Two-pillar `12+7+7+7` `S-WOTS+Z` + `U-PORS` architecture (`8` tweak kinds, `0 B` required ROM):**
+- **Two-pillar `12+7+7+7` `S-WOTS+Z` + `U-PORS` architecture (`8` tweak kinds, `0 B` static lookup tables):**
   - **Hypertree:** `d = 4` layers (`h = 33`), one `128 KiB` cached top tree (`h_top = 12`, `4,096` leaves) + three uniform height-`7` lower trees (`128` leaves each), using ONE uniform OTS primitive (`S-WOTS+Z`: `n = 24, w = 40, S = 468, z = 8`, `2`-byte `u16` counter).
-  - **Few-time signature:** ONE height-`10` binary Merkle tree (`1,024` leaves) using `U-PORS(n = 3, w = 24, S = 42, C = 376, k = 10, m_max = 44)` with closed-form hexagon unranking (`0 B` ROM), exact `64`-byte single-block BLAKE3 leaf hashing (`16 + 3 × 16 = 64 B`), Octopus path merging with canonical trailing zero-padding, and indexed `32`-byte `Keyed` codeword derivation (zero XOF).
-- **Fast constant-work verification & 100% SIMD-aligned single-threaded signing:** short-message verification executes **`2,267` BLAKE3 compressions** (exact constant chain work: `468` steps/hypertree layer, `27` steps/opened `U-PORS` leaf) and zero heap allocations; every tree size (`128`, `1,024`, `4,096` leaves -> `3,072` / `98,304` chains) is an exact multiple of `32` SIMD lanes, enabling a single-threaded `12,288`-chain SIMD super-wave via `blake3-servil-core = "=0.11.0"`.
+  - **Few-time signature:** ONE height-`10` binary Merkle tree (`1,024` leaves) using `U-PORS(n = 3, w = 24, S = 42, C = 376, k = 10, m_max = 44)` with closed-form hexagon unranking (`0 B` static tables), exact `64`-byte single-block BLAKE3 leaf hashing (`16 + 3 × 16 = 64 B`), Octopus path merging with canonical trailing zero-padding, and indexed `32`-byte `Keyed` codeword derivation (zero XOF).
+- **Fast constant-work verification & 100% SIMD-aligned single-threaded signing:** short-message verification executes **`2,231 + m + b` BLAKE3 compressions** (**`2,276`** at `m = 44, b = 1`; exact constant chain work: `468` steps/hypertree layer, `27` steps/opened `U-PORS` leaf) and zero heap allocations; every tree size (`128`, `1,024`, `4,096` leaves -> `3,072` / `98,304` chains) is an exact multiple of `32` SIMD lanes, enabling a single-threaded `12,288`-chain SIMD super-wave via `blake3-servil-core = "=0.11.0"`.
 - **Suite-separated key schedule, framed application `Context`, and fail-closed verification:** every algorithm key-derivation context binds `BLINCS-128-A2`, every imprint binds a typed `Context` (`0..=255` bytes, framed as `u8(len(ctx)) || ctx`) into `K_msg`, `R`, and `D_seed`, and verification fails closed.
 
 ---
 
-## 2. Why $2^{32}$ signatures and why `3,292` bytes is near the black-box BLAKE3 floor
+## 2. Why $2^{32}$ signatures, certified capped-history `U-PORS`, and `q = 2^{64}` comparison baselines
 
 The sizing target is one full `u32` of signatures per signing key: **$2^{32} = 4{,}294{,}967{,}296$** (10 signatures every second nonstop for **13.6 years**). Do not imprint more than `2^32` things with one signet.
 
-### Black-box walls we proved before picking parameters
+### Certified capped-history `U-PORS` security (`tools/upors_cert.rs`)
 
-Before finalizing `BLINCS-128-A2`, we analyzed the hard information-theoretic walls for any black-box BLAKE3 stateless signature at $q = 2^{32}$ and 128-bit security (`paper/RESEARCH_NOTES.md §7`):
+Enforcing the Octopus cap `sibs(S) <= 44` on honest signatures conditions the signer's leaf sets onto `F = {S subset [1024] : |S| = 10, sibs(S) <= 44}` (exact `|F| = 256,172,225,164,499,838,464`, exact `p_cap = 7.6637e-4`, mean `1,304.8` trials). Because `sibs(S) <= 44` forces `sum_{j=1}^9 n_j <= 52`, conditioning on `F` **breaks negative association** and creates `16.01×` sibling clustering (`d = 1`), absorbing `~4.2 b` of the naive uncapped-signer cap credit!
 
-1. **Bleichenbacher–Maurer OTS DAG bound (1996):** any black-box 1-time signature with `128`-bit resistance needs $\ge n \cdot 2^{128/n}$ hashes for `n` chains (`16n` bytes) and $\ge 241$ hashes/leaf unconditionally.
-2. **2-use WOTS (`CUTS`) 3-way symmetry bound:** for any marginal on $\{0,\dots,w-1\}$, three i.i.d. draws satisfy $\Pr[Y \ge \min(X_1, X_2)] \ge 2/3$, capping 2-use chains at $\le 0.585$ bits/chain ($\ge 219$ chains = `3,504 B`), strictly worse than 1-use WOTS + 1 Merkle level.
-3. **BLAKE3 VOLE-in-the-Head (`FAEST`-style):** BLAKE3's 32-bit ARX additions take `~10,752` non-linear AND gates per compression (`8.4×` AES-128), yielding `~12–18 KiB` proofs.
-4. **16-byte hash width:** every chain value and Merkle node must stay `16 B` (`128` bits) against 2nd-preimage and chain-inversion attacks.
+Our zero-dependency 320-bit fixed-point Kronecker-transform + all-37-strata verifier (`tools/upors_cert.rs`, using the certified 3-term exponential upper envelope `u_3(t) = 1 - (8905/7144)(0.81)^t + (1761/7144)(0.05)^t >= q_C(t)` with zero NA/factorization assumptions) certifies:
 
-With a `128 KiB` cached top tree (`h_top = 12`) and a `≤ 5.0 s` `p99` warm signing budget on a `160 MHz` Cortex-M33 (`~530k` compressions), **`BLINCS-128-A2` (`3,292 B`)** sits right at the Pareto knee of pure black-box stateless BLAKE3 signatures — slashing size by **48.8%** vs. our prior zero-cache `U-FORS` (`6,432 B`), **55.5%** vs. original `FORS(8,20)` (`7,392 B`), and **58.1%** vs. NIST FIPS 205 `SLH-DSA-128s` (`7,856 B`).
+| Signatures signed by one key (`h = 33`) | Exact Uncapped (`Unc+Unc`, 0 MC) | Certified True `BLINCS-128-A2` (`Cap+Cap`, 99% LCB) | True Net Cap Effect |
+|---:|---:|---:|---:|
+| $2^{30}$ (1.07B) | `141.17` bits | **`142.83` bits** | `+1.70 b` |
+| $2^{31}$ (2.15B) | `135.83` bits | **`137.85` bits** | `+2.06 b` |
+| **$2^{32}$ (budget, 4.29B)** | **`129.63` bits** | **`132.13` bits** | **`+2.54 b`** |
+| $2^{33}$ ($2\times$, 8.59B) | `122.36` bits | `125.48` bits | `+3.16 b` |
+| $2^{34}$ ($4\times$, 17.2B) | `113.83` bits | `117.72` bits | `+3.93 b` |
+| $2^{35}$ ($8\times$, 34.4B) | `103.81` bits | `108.63` bits | `+4.85 b` |
 
-### Exact `U-PORS` security table (elementary zero-cap-credit AND true importance-sampled)
+### Equal-budget `q = 2^{64}` scientific comparison baselines (exposition only)
 
-| Signatures signed by one key | Elementary zero-cap-credit DP (`BLINCS-128-A2`) | True security incl. Octopus cap (`m_max = 44`, IS `6000×32`) |
-|---:|---:|---:|
-| $2^{32}$ (budget, 4.29B) | **128.58 bits** | **135.37 bits** |
-| $2^{33}$ ($2\times$, 8.59B) | 121.56 bits | **128.91 bits** |
-| $2^{34}$ ($4\times$, 17.2B) | 113.29 bits | ~121.1 bits |
-| $2^{35}$ ($8\times$, 34.4B) | 103.55 bits | ~111.7 bits |
+To separate the byte savings of `S-WOTS+Z` + `U-PORS` from the `q = 2^{32}` vs. `q = 2^{64}` budget and `128 KiB` cache differences when comparing against `SLH-DSA-128s` (`7,856 B`), [`paper/blincs.pdf`](paper/blincs.pdf) (§7.1) specifies two `h = 65` (`lambda = 0.5`, identical `132.13 b` `U-PORS` bound) scientific comparison baselines:
 
-Crucially, `BLINCS-128-A2` clears **128.58 bits at $q = 2^{32}$ purely from the elementary without-replacement hypergeometric DP with ZERO cap credit** — so neither the paper proof nor the Lean 4 formalization depends on Monte Carlo estimation — while the verifier-enforced Octopus cap (`m_max = 44`, `p_cap ≈ 0.0007325`) contributes `+6.79` additional true bits at $2^{32}$ and keeps true security above `128` bits even at $2\times$ overuse ($2^{33}$).
+- **`BLINCS-128-64`** (`d = 8`, `9 + 7×8`, identical `16 KiB` top cache to `SLH-DSA-128s`): **`5,348 B`** (`-31.9%` vs. `SLH-DSA-128s`, est. `~16.7 ms` 1-core M6 sign, `4,212` verify compressions).
+- **`BLINCS-128-64s`** (`d = 7`, `11 + 6×9` [`64 KiB`] or `12 + 8 + 5×9` [`128 KiB`]): **`4,962 B`** (`-36.8%` vs. `SLH-DSA-128s`, est. `~25.9–28.1 ms` 1-core M6 sign, `3,736` verify compressions).
+
+All practical engineering, product design, optimization, security hardening, Lean 4 formalization, and shipped implementations (`signet`, `git-signet`) remain focused strictly on flagship **`BLINCS-128-A2`** (`q <= 2^{32}`, `3,292 B`).
 
 ---
 
@@ -72,22 +74,22 @@ Our prior `BLINCS-128-7x5` draft targeted zero-cache `60 MHz` Ledger `ST33` (`�
 | Operation | Exact BLAKE3 compressions | Modeled `160 MHz` Cortex-M33 | Measured `1-core` Apple M6 (`signet`, `blake3-servil-core 0.11.0`) |
 |---|---:|---:|---:|
 | `from_seed` (`128 KiB` top tree, `h_top = 12`) | `3,964,927` | ~37.2 s (once at keygen, cached in Flash) | **31.97 ms** |
-| Warm sign (`3×` height-7 + `1×` height-10 `U-PORS` + grind) | `447,976` fixed + `2,389` mean / `~8,000` `p99` | **~4.22 s mean / ~4.27 s `p99`** (`1.013×` tail!) | **4.15 ms** (12,288-chain super-wave + self-verify) |
-| Verify (short message, `sibs = 44`) | **`2,267`** | **~21.3 ms** | **39.1 µs** (`25,600/s`, zero heap alloc) |
+| Warm sign (`3×` height-7 + `1×` height-10 `U-PORS` + grind) | `447,976` fixed + `2,329` mean / `~8,000` `p99` | **~4.22 s mean / ~4.27 s `p99`** (`1.013×` tail!) | **4.15 ms** (12,288-chain super-wave + self-verify) |
+| Verify (short message, `m = 44, b = 1`) | **`2,276`** (`2,231 + m + b`) | **~21.3 ms** | **39.1 µs** (`25,600/s`, zero heap alloc) |
 
 ### Why every parameter has its exact value
 
 - **`S-WOTS+Z(n = 24, w = 40, S = 468, z = 8, u16 ctr)`:**
   - `w = 40` is the **minimal** Winternitz base for `n = 24` whose middle-slice Sperner cardinality exceeds $2^{120}$:
-    - `w = 39`: $|L_{456}(24, 39)| = 2^{119.730} < 2^{120}$ (mechanically verified in Lean 4: `wots_w39_lt_pow120`).
-    - `w = 40`: $|L_{468}(24, 40)| = 1{,}973{,}221{,}677{,}906{,}098{,}493{,}567{,}206{,}234{,}001{,}571{,}000 = 2^{120.570} > 2^{120}$ (mechanically verified in Lean 4: `wots_sperner_gt_pow120`).
-  - `z = 8` (leading zero byte `h[0] == 0`) lifts `120.57` bits to **`128.57` bits** while keeping the `u16` counter (`65,536` slots) utterly safe from overflow: $(1 - 2^{-8})^{65536} \approx 2^{-370}$. By contrast, `z = 10` (`1/1024`) would have a `2^{-92.4}` `u16` overflow hazard (`< 128` bits!), so `z = 8` was chosen over `z = 10`.
-  - Constant sum `S = 468` makes every layer's verification work **exact constant `468` chain steps** (zero timing/work variance) and requires `0 B` of ROM via `O(S)` boxcar deconvolution (`7.5 KiB` precomputed `u128` row table optional for ~`206 ns` desktop unranking).
+    - `w = 39`: $|L_{456}(24, 39)| = 2^{119.730} < 2^{120}$ (mechanically verified directly on `sliceCount` in Lean 4: `wots_w39_lt_pow120`).
+    - `w = 40`: $|L_{468}(24, 40)| = 1{,}973{,}221{,}677{,}906{,}098{,}493{,}567{,}206{,}234{,}001{,}571{,}000 = 2^{120.570} > 2^{120}$ (mechanically verified directly on `sliceCount` in Lean 4: `wots_sperner_gt_pow120`).
+  - `z = 8` (leading zero byte `h[0] == 0`) paired with the first `2^{120}` ranks gives an exact effective `2^{128}` domain while keeping the `u16` counter (`65,536` slots) safe from exhaustion: $(1 - 2^{-8})^{65536} \approx 2^{-370}$. By contrast, `z = 10` (`1/1024`) would have a `2^{-92.4}` `u16` overflow hazard (`< 128` bits!), so `z = 8` was chosen over `z = 10`.
+  - Constant sum `S = 468` makes every layer's verification work **exact constant `468` chain steps** (zero timing/work variance) and requires `0 B` of static lookup tables via `O(S)` boxcar deconvolution (`7.5 KiB` stack RAM; optional `7.5 KiB` precomputed `u128` row cache for `~206 ns` desktop unranking).
 - **`U-PORS(n = 3, w = 24, S = 42, C = 376, A = 10, k = 10, m_max = 44, u32 ctr)`:**
   - `n = 3` chains keep `ONE_TIME_KEY` leaf input to `16 + 3 × 16 = 64` bytes (**exact 1 BLAKE3 block**).
-  - `S = 42` in `{0..=23}^3` is an **upper-layer constant-sum slice** (above midpoint `34.5`), exploiting **Lattice-Meet Asymmetry** (`lc[1] = 1/376`, `lc[2] = 0.1462`, `lc[3] = 0.3056`) while cutting verification steps to a constant `3 × 23 - 42 = 27` per opened leaf (`270` total) and admitting a **12-line exact closed-form hexagon unranker (`0 B` ROM!)**.
-  - `m_max = 44` (`p_cap = 0.0007325`, `mean = 1,365`, `p99 = 6,287` trials on 2M trials) keeps grinding to `< 1.8%` of total `p99` work (`p99/mean = 1.013×`!), eliminates variable-length wire formats via canonical zero-padding (`sibs < 44`), and makes `u32` counter exhaustion impossible ($2^{-4.54 \times 10^6}$).
-  - Indexed `32`-byte `Keyed` blocks (`FEW_CODE`, 28 9-bit draws/block, `99.9996%` single block) replace BLAKE3 XOF so Python, TypeScript, Lean 4, and `#![no_std]` verifiers never need XOF mode.
+  - `S = 42` in `{0..=23}^3` is an **upper-layer constant-sum slice** (above midpoint `34.5`), exploiting **Lattice-Meet Asymmetry** (`q_C(1) = 1/376`, `q_C(2) = 0.17000`, `q_C(3) = 0.33624`) while cutting verification steps to a constant `3 × 23 - 42 = 27` per opened leaf (`270` total) and admitting a **10-line exact closed-form hexagon unranker (`0 B` static lookup tables)**.
+  - `m_max = 44` (exact `p_cap = 7.6637e-4`, mean `1,304.8`, `p99 ≈ 6,009` trials) keeps grinding to `< 1.8%` of total `p99` work (`p99/mean = 1.013×`!), eliminates variable-length wire formats via canonical zero-padding (`sibs < 44`), and makes `u32` counter exhaustion impossible ($2^{-4.75 \times 10^6}$).
+  - Indexed `32`-byte `Keyed` blocks (`FEW_CODE`, 28 9-bit draws/block, `99.9994%` single block, `2^{-61}` 2-block failure) replace BLAKE3 XOF so Python, TypeScript, Lean 4, and `#![no_std]` verifiers never need XOF mode.
 
 ---
 
@@ -98,7 +100,7 @@ Our prior `BLINCS-128-7x5` draft targeted zero-cache `60 MHz` Ledger `ST33` (`�
 1. **BLAKE3 (`Keyed` + `DeriveKey`, zero XOF) as the sole primitive** (`blake3-servil-core = "=0.11.0"`, strictly single-threaded).
 2. **`128 KiB` cached top tree (`h_top = 12`, `d = 4`: `12+7+7+7`)** (inspired by Project 11's taller cached top-tree analysis).
 3. **`S-WOTS+Z` (`n = 24, w = 40, S = 468, z = 8, u16 ctr`)**: combines Sperner middle-layer constant-sum coding (de Bruijn–Tengbergen–Kruyswijk 1951; Zhang–Cui–Yu [ePrint 2023/850](https://eprint.iacr.org/2023/850); Khovratovich–Kudinov–Wagner [ePrint 2025/889](https://eprint.iacr.org/2025/889)) with zero-bit counter grinding (`WOTS+C` / [ePrint 2022/778](https://eprint.iacr.org/2022/778)) while spending `0%` of grinding budget on sum rejection.
-4. **Zero-ROM `U-PORS` + Octopus merging** (building on `PORS+FP`, Abri & Katz [ePrint 2025/2069](https://eprint.iacr.org/2025/2069), and Octopus, Aumasson & Endignoux [ePrint 2017/933](https://eprint.iacr.org/2017/933), upgraded with 3-chain upper-layer Lattice-Meet Asymmetry, closed-form hexagon unranking, without-replacement hypergeometric DP, and canonical zero-padding).
+4. **Zero-table `U-PORS` + Octopus merging** (building on `PORS+FP`, Abri & Katz [ePrint 2025/2069](https://eprint.iacr.org/2025/2069), and Octopus, Aumasson & Endignoux [ePrint 2017/933](https://eprint.iacr.org/2017/933), upgraded with 3-chain upper-layer Lattice-Meet Asymmetry, closed-form hexagon unranking, canonical zero-padding, and certified capped-history 320-bit Kronecker bounds in `tools/upors_cert.rs`).
 5. **Single-pass salted content hashing (`K_content -> K_msg -> h_msg`)** + hedged post-hash randomizer `R = Keyed(K_R, short || framed_ctx)[..16]` + `D_seed` binding `root`, `R`, `short`, and `framed_ctx`.
 6. **Lock-free single-file atomic-rename `Randomness` state** + `Signet::generate(&rng)`.
 
@@ -106,7 +108,7 @@ Our prior `BLINCS-128-7x5` draft targeted zero-cache `60 MHz` Ledger `ST33` (`�
 
 7. **Crash-Safe `U-PORS` Hybrid / `SHRINCS` ([ePrint 2025/2203](https://eprint.iacr.org/2025/2203)):** keeping BLINCS 100% pure stateless avoids read-only-filesystem degradation, dual-branch format/code complexity, and Feistel/privacy trade-offs once pure stateless size dropped to **`3,292 B`**. (Documented as a research remark in `paper/RESEARCH_NOTES.md §9`.)
 8. **Zero-cache `60 MHz` Ledger `ST33` floor (`4,834 B`–`6,432 B`):** `ST33` (`~25 µs/comp`, zero Flash cache) hits a hard black-box floor around `4,690 B`–`4,834 B`; targeting modern `160 MHz` Cortex-M33 + `128 KiB` cached top tree saves **`1,542 B`–`3,140 B`**.
-9. **BLAKE3 XOF mode for `U-PORS` codeword sampling:** replaced by indexed `32`-byte `Keyed` hashes (`FEW_CODE`, `99.9996%` single compression) for minimal primitive surface across Rust, Python, TypeScript, and Lean 4.
+9. **BLAKE3 XOF mode for `U-PORS` codeword sampling:** replaced by indexed `32`-byte `Keyed` hashes (`FEW_CODE`, `99.9994%` single compression, `2^{-61}` 2-block failure) for minimal primitive surface across Rust, Python, TypeScript, and Lean 4.
 10. **`z = 10` `S-WOTS+Z` with `u16` counter:** `2^{-92.4}` counter-overflow risk; `z = 8` (`2^{-370}`) eliminates the hazard cleanly.
 11. **Classical MDS / Reed–Solomon / $r$-CFF / Golay / Steiner / `CUTS` 2-use WOTS / BLAKE3 VOLEitH / Haraka / AES-NI:** all rigorously bounded in `paper/RESEARCH_NOTES.md §§4, 7` and proven strictly dominated under BLINCS's pure-BLAKE3 stateless constraints.
 12. **Library-internal multithreading:** kept strictly single-threaded via `blake3-servil-core = "=0.11.0"` so a signature library never spawns background threads or contends with a host application's scheduler.
@@ -141,7 +143,7 @@ Signet uses a single private `0600` 32-byte state file rotated via sibling temp 
 
 ## 7. Crash-only design and single-threaded SIMD performance engineering
 
-- **Pure crash-only lifecycle (zero `Drop`, zero background threads, zero `thread_local!`):** `Signet` caches its `128 KiB` top tree in memory once on construction. Verification (`SignetId::verify` / `verify_with`) executes `2,267` short-message compressions with **zero heap allocations** via `TreeHasher::on_this_core()`. Signing uses a **merged 12,288-chain single-threaded SIMD super-wave** (`3` height-7 trees × `128 × 24 = 9,216` chains + `1` height-10 `U-PORS` tree × `1,024 × 3 = 3,072` chains stepped together in lockstep!) and `TreeHasher::hash_counter_range` for register-only `ChainSecret`/`OneTimeMsg`/`FewSelect` sweeps.
+- **Pure crash-only lifecycle (zero `Drop`, zero background threads, zero `thread_local!`):** `Signet` caches its `128 KiB` top tree in memory once on construction. Verification (`SignetId::verify` / `verify_with`) executes `2,276` short-message compressions (`2,231 + m + b` at `m = 44, b = 1`) with **zero heap allocations** via `TreeHasher::on_this_core()`. Signing uses a **merged 12,288-chain single-threaded SIMD super-wave** (`3` height-7 trees × `128 × 24 = 9,216` chains + `1` height-10 `U-PORS` tree × `1,024 × 3 = 3,072` chains stepped together in lockstep!) and `TreeHasher::hash_counter_range` for register-only `ChainSecret`/`OneTimeMsg`/`FewSelect` sweeps.
 - **Types carry their rules & fail-stop contracts:** `#![forbid(unsafe_code)]`; `Signet::imprint` / `imprint_with` self-verify every produced imprint (~`39 µs`) before returning and panic on mismatch.
 
 ---

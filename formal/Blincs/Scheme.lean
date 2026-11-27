@@ -1,12 +1,20 @@
 /-
   BLINCS-128-A2 Declarative Specification: Complete Scheme (`S-WOTS+Z` + `U-PORS`), Wire Format & Completeness.
-  Matches SPEC.md §§4–12 verbatim over an abstract `HashOracle` (`keyed`, `derive`).
+  Matches SPEC.md §§4–11 byte-for-byte over an abstract `HashOracle` (`keyed`, `derive`):
+    - `CHAIN_SECRET`: `tweak(1, layer, tree, 0, 0, leaf * n_chains + c)`, empty data (`SPEC.md §§5, 9`)
+    - `ONE_TIME_MSG`: `tweak(5, layer, tree, leaf, 0, 0)`, data `child_root || u32_le(ctr_l)` (`SPEC.md §§5, 11.1`)
+    - `FEW_SELECT`:   `tweak(7, 0x80, 0, 0, 0, 0)`, data `D_seed || u32_le(ctr_ft)` (`SPEC.md §§5, 8.1`)
+    - `FEW_CODE`:     `tweak(8, 0x80, 0, 0, block_idx, 0)`, data `D_seed || u32_le(ctr_ft)` (`SPEC.md §§5, 8.2`),
+                      returning `Option` (fails closed as `none` on block-index exhaustion, never defaulting to `0`)
+    - `U-PORS` selection: up to 22 consecutive 10-bit draws from bits `0..220` collecting first 10 distinct leaves
+      sorted ascending, plus 33-bit `leaf_addr` from bits `220..253` (`SPEC.md §8.1`).
   Mechanically proves (ZERO `sorry`, ZERO custom axioms):
-    1. Exact wire length (`(encodeImprint σ).length = 3292 = IMPRINT_LEN`).
-    2. Exact wire injectivity (`encodeImprint σ₁ = encodeImprint σ₂ → σ₁ = σ₂`).
-    3. **BLINCS-128-A2 Completeness Theorem**: every honestly generated imprint (with valid
-       grinding counters `ctrFt` and `layerCtrs`) ALWAYS verifies to `True` — including exact
-       Octopus root recovery and canonical trailing zero-padding!
+    1. Exact wire length (`encodeImprint_length`: `3,292` bytes), injectivity (`encodeImprint_injective`),
+       and parser round-trip (`decodeImprint_encodeImprint`) + wrong-length rejection (`decodeImprint_bad_len`).
+    2. Automatic `S-WOTS+Z` Sperner rank validity (`wotsRank_lt_sliceCount`: `wotsRank h < sliceCount 40 24 468`)
+       derived directly from `wots_sperner_gt_pow120` (no redundant premise in `ValidWotsHash`).
+    3. Conditional completeness (`blincs_completeness`): given valid counters and non-exhausted `FEW_CODE`,
+       `imprintWithCounters` always passes `verify` (including Octopus recovery and canonical trailing zero-padding).
 -/
 import Blincs.Params
 import Blincs.Tweaks
@@ -15,7 +23,7 @@ import Blincs.Merkle
 
 namespace Blincs
 
-/-- Abstract BLAKE3 hash oracle (`SPEC.md §2`): `keyed` (KEYED_HASH) and `derive` (DERIVE_KEY). -/
+/-- Abstract BLAKE3 hash oracle (`SPEC.md §2`): `keyed` (`KEYED_HASH`) and `derive` (`DERIVE_KEY`). -/
 structure HashOracle where
   keyed  : Bytes 32 → List UInt8 → Bytes 32
   derive : String → List UInt8 → Bytes 32
@@ -97,12 +105,14 @@ theorem flattenBytes16_injective {k : Nat} {xs ys : Fin k → Bytes 16}
   exact Bytes.toList_injective hi
 
 -- ---------------------------------------------------------------------------
--- Unified Chain-and-Merkle Primitive (`SPEC.md §9`, shared by U-PORS & Hypertree!)
+-- Unified Chain-and-Merkle Primitive (`SPEC.md §§5, 9`)
 -- ---------------------------------------------------------------------------
 
+/-- `CHAIN_SECRET` (`SPEC.md §5`): `leaf = 0`, `a = 0`, `b = leaf * nChains + c`, empty data. -/
 def chainStart (H : HashOracle) (K_sec : Bytes 32)
-    (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) (leaf : UInt16) (c : Nat) : Bytes 16 :=
-  shortHash H K_sec ⟨.chainSecret, layer, tree, hTree, leaf, UInt16.ofNat c, 0⟩ []
+    (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) (leaf : UInt16)
+    (nChains c : Nat) : Bytes 16 :=
+  shortHash H K_sec ⟨.chainSecret, layer, tree, hTree, 0, 0, UInt32.ofNat (leaf.toNat * nChains + c)⟩ []
 
 def chainStepFn (H : HashOracle) (K_pub : Bytes 32)
     (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) (leaf : UInt16) (c : Nat) :
@@ -111,22 +121,22 @@ def chainStepFn (H : HashOracle) (K_pub : Bytes 32)
 
 def chainEndpoint (H : HashOracle) (K_sec K_pub : Bytes 32)
     (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) (leaf : UInt16)
-    (maxSteps c : Nat) : Bytes 16 :=
+    (nChains maxSteps c : Nat) : Bytes 16 :=
   chainIter (chainStepFn H K_pub layer tree hTree leaf c) 0 maxSteps
-    (chainStart H K_sec layer tree hTree leaf c)
+    (chainStart H K_sec layer tree hTree leaf nChains c)
 
 def chainLeafPk (H : HashOracle) (K_sec K_pub : Bytes 32)
     (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) (leaf : UInt16)
     (nChains maxSteps : Nat) : Bytes 16 :=
   shortHash H K_pub ⟨.oneTimeKey, layer, tree, hTree, leaf, 0, 0⟩
-    (flattenBytes16 (fun c : Fin nChains => chainEndpoint H K_sec K_pub layer tree hTree leaf maxSteps c.val))
+    (flattenBytes16 (fun c : Fin nChains => chainEndpoint H K_sec K_pub layer tree hTree leaf nChains maxSteps c.val))
 
 def chainSignGeneric (H : HashOracle) (K_sec K_pub : Bytes 32)
     (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) (leaf : UInt16)
     {nChains : Nat} (digits : Fin nChains → Nat) : Fin nChains → Bytes 16 :=
   fun c =>
     chainIter (chainStepFn H K_pub layer tree hTree leaf c.val) 0 (digits c)
-      (chainStart H K_sec layer tree hTree leaf c.val)
+      (chainStart H K_sec layer tree hTree leaf nChains c.val)
 
 def chainVerifyGeneric (H : HashOracle) (K_pub : Bytes 32)
     (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) (leaf : UInt16)
@@ -149,19 +159,24 @@ theorem chainVerifyGeneric_sign (H : HashOracle) (K_sec K_pub : Bytes 32)
   apply congrArg flattenBytes16
   funext c
   exact chain_complete (chainStepFn H K_pub layer tree hTree leaf c.val)
-    (chainStart H K_sec layer tree hTree leaf c.val) (hDigits c)
+    (chainStart H K_sec layer tree hTree leaf nChains c.val) (hDigits c)
 
-/-- Unified Merkle combine function (`SPEC.md §9`, used by BOTH hypertree and U-PORS). -/
+/-- Unified Merkle combine function (`SPEC.md §§5, 9`, used by BOTH hypertree and U-PORS). -/
 def treeCombine (H : HashOracle) (K_pub : Bytes 32)
     (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) :
     Nat → Nat → Bytes 16 → Bytes 16 → Bytes 16 :=
   fun level p L R =>
     shortHash H K_pub ⟨.node, layer, tree, hTree, 0, UInt16.ofNat level, UInt32.ofNat p⟩ (L.toList ++ R.toList)
 
+def treeLeafFn (H : HashOracle) (K_sec K_pub : Bytes 32)
+    (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) (nChains maxSteps : Nat) :
+    Nat → Bytes 16 :=
+  fun leaf => chainLeafPk H K_sec K_pub layer tree hTree (UInt16.ofNat leaf) nChains maxSteps
+
 def treeLeaves (H : HashOracle) (K_sec K_pub : Bytes 32)
     (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) (h nChains maxSteps : Nat) :
     Fin (2 ^ h) → Bytes 16 :=
-  fun leaf => chainLeafPk H K_sec K_pub layer tree hTree (UInt16.ofNat leaf.val) nChains maxSteps
+  fun leaf => treeLeafFn H K_sec K_pub layer tree hTree nChains maxSteps leaf.val
 
 def treeRoot (H : HashOracle) (K_sec K_pub : Bytes 32)
     (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) (h nChains maxSteps : Nat) : Bytes 16 :=
@@ -169,13 +184,13 @@ def treeRoot (H : HashOracle) (K_sec K_pub : Bytes 32)
     (treeLeaves H K_sec K_pub layer tree hTree h nChains maxSteps)
 
 -- ---------------------------------------------------------------------------
--- U-PORS Single Height-10 Tree & Octopus Multi-Proof (`SPEC.md §10`)
+-- U-PORS Selection, Codeword Extraction & Octopus Multi-Proof (`SPEC.md §§8, 10`)
 -- ---------------------------------------------------------------------------
 
 /-- Leaf oracle `Nat → Bytes 16` for the single height-10 U-PORS tree at `leafAddr`. -/
 def uporsLeafFn (H : HashOracle) (K_sec K_pub : Bytes 32)
     (leafAddr : Nat) (hAddr : leafAddr < 2 ^ 48) : Nat → Bytes 16 :=
-  fun leaf => chainLeafPk H K_sec K_pub uporsLayerByte leafAddr hAddr (UInt16.ofNat leaf) UPORS_N UPORS_STEPS
+  treeLeafFn H K_sec K_pub uporsLayerByte leafAddr hAddr UPORS_N UPORS_STEPS
 
 /-- Honest root of the single height-10 U-PORS tree at `leafAddr` (`SPEC.md §10.2`). -/
 def uporsRoot (H : HashOracle) (K_sec K_pub : Bytes 32)
@@ -187,14 +202,14 @@ def uporsRoot (H : HashOracle) (K_sec K_pub : Bytes 32)
 def readBits (D : Bytes 32) (off width : Nat) : Nat :=
   (decodeLE D.toList / 2 ^ off) % 2 ^ width
 
-/-- `D_sel = Keyed(K_pub, tweak(FEW_SELECT, ctr_ft) || D_seed)` (`SPEC.md §10.3`). -/
+/-- `FEW_SELECT` (`SPEC.md §§5, 8.1`): `layer = 0x80`, data = `D_seed || u32_le(ctr_ft)`. -/
 def fewSelectDigest (H : HashOracle) (K_pub : Bytes 32) (D_seed : Bytes 32) (ctrFt : UInt32) : Bytes 32 :=
-  let twk : Tweak := ⟨.fewSelect, 0, 0, by decide, 0, 0, ctrFt⟩
-  H.keyed K_pub (encodeTweak twk ++ D_seed.toList)
+  let twk : Tweak := ⟨.fewSelect, uporsLayerByte, 0, by decide, 0, 0, 0⟩
+  H.keyed K_pub (encodeTweak twk ++ D_seed.toList ++ encodeLE ctrFt.toNat 4)
 
-/-- 33-bit hypertree leaf address `bits 0..33` of `D_sel` (`SPEC.md §10.3`). -/
+/-- 33-bit hypertree leaf address `bits 220..253` of `D_sel` (`SPEC.md §8.1`). -/
 def extractLeafAddr (D_sel : Bytes 32) : Nat :=
-  readBits D_sel 0 HYPER_BITS
+  readBits D_sel (UPORS_SELECT_MAX_DRAWS * UPORS_HEIGHT) HYPER_BITS
 
 theorem extractLeafAddr_lt (D_sel : Bytes 32) : extractLeafAddr D_sel < 2 ^ HYPER_BITS :=
   Nat.mod_lt _ (by decide)
@@ -204,29 +219,111 @@ theorem extractLeafAddr_lt_48 (D_sel : Bytes 32) : extractLeafAddr D_sel < 2 ^ 4
   have h2 := params_tree_fits_tweak
   omega
 
-/-- Insert `x` into a strictly ascending list, returning `none` if `x` is a duplicate. -/
-def insertUniqueSorted (x : Nat) : List Nat → Option (List Nat)
-  | [] => some [x]
+/-- Insert `x` into a strictly ascending list if not already present (idempotent on duplicates). -/
+def insertSortedDedup (x : Nat) : List Nat → List Nat
+  | [] => [x]
   | y :: ys =>
-    if x < y then some (x :: y :: ys)
-    else if x = y then none
+    if x < y then x :: y :: ys
+    else if x = y then y :: ys
+    else y :: insertSortedDedup x ys
+
+/-- Strictly ascending predicate (`∀` adjacent elements strictly increase, implying `Nodup`). -/
+def StrictlySorted : List Nat → Prop
+  | [] => True
+  | [_] => True
+  | x :: y :: rest => x < y ∧ StrictlySorted (y :: rest)
+
+private theorem strictlySorted_head_lt_all {x : Nat} {ys : List Nat}
+    (hs : StrictlySorted (x :: ys)) : ∀ z ∈ ys, x < z := by
+  induction ys generalizing x with
+  | nil => intro _ hz; cases hz
+  | cons y rest ih =>
+    intro z hz
+    simp only [StrictlySorted] at hs
+    simp only [List.mem_cons] at hz
+    rcases hz with rfl | hmem
+    · exact hs.1
+    · have h2 := ih hs.2 z hmem
+      omega
+
+theorem strictlySorted_nodup : ∀ {l : List Nat}, StrictlySorted l → l.Nodup
+  | [], _ => List.nodup_nil
+  | [_], _ => by simp
+  | x :: y :: rest, hs => by
+    rw [List.nodup_cons]
+    refine ⟨?_, strictlySorted_nodup hs.2⟩
+    intro hmem
+    have hlt := strictlySorted_head_lt_all hs x hmem
+    omega
+
+private theorem insertSortedDedup_strictlySorted (x : Nat) :
+    ∀ {l : List Nat}, StrictlySorted l → StrictlySorted (insertSortedDedup x l)
+  | [], _ => trivial
+  | [y], _ => by
+    unfold insertSortedDedup
+    by_cases h1 : x < y
+    · rw [ite_eq_left h1]; exact ⟨h1, trivial⟩
+    · rw [ite_eq_right h1]
+      by_cases h2 : x = y
+      · rw [ite_eq_left h2]; trivial
+      · rw [ite_eq_right h2]; exact ⟨by omega, trivial⟩
+  | y :: z :: rest, hs => by
+    unfold insertSortedDedup
+    by_cases h1 : x < y
+    · rw [ite_eq_left h1]; exact ⟨h1, hs⟩
+    · rw [ite_eq_right h1]
+      by_cases h2 : x = y
+      · rw [ite_eq_left h2]; exact hs
+      · rw [ite_eq_right h2]
+        have hrec := insertSortedDedup_strictlySorted x hs.2
+        have hlt_y : y < x := by omega
+        -- Check head of `insertSortedDedup x (z :: rest)` is `min x z > y`
+        unfold insertSortedDedup at hrec ⊢
+        by_cases h3 : x < z
+        · rw [ite_eq_left h3] at hrec ⊢; exact ⟨hlt_y, hrec⟩
+        · rw [ite_eq_right h3] at hrec ⊢
+          by_cases h4 : x = z
+          · rw [ite_eq_left h4] at hrec ⊢; exact ⟨hs.1, hrec⟩
+          · rw [ite_eq_right h4] at hrec ⊢; exact ⟨hs.1, hrec⟩
+
+/-- Scan up to `UPORS_SELECT_MAX_DRAWS` (22) consecutive 10-bit draws from bits `0..220` of `D_sel`,
+    collecting the first `UPORS_K` (10) distinct leaves sorted strictly ascending (`SPEC.md §8.1`). -/
+def extractUporsLeavesAux (D_sel : Bytes 32) : (i rem : Nat) → List Nat → Option (List Nat)
+  | _, 0, acc => if acc.length = UPORS_K then some acc else none
+  | i, rem + 1, acc =>
+    if acc.length = UPORS_K then some acc
     else
-      match insertUniqueSorted x ys with
-      | none => none
-      | some zs => some (y :: zs)
+      let idx := readBits D_sel (i * UPORS_HEIGHT) UPORS_HEIGHT
+      extractUporsLeavesAux D_sel (i + 1) rem (insertSortedDedup idx acc)
 
-/-- Extract the sorted list of 10 strictly distinct 10-bit U-PORS leaves from `D_sel` (`SPEC.md §10.3`). -/
 def extractUporsLeaves (D_sel : Bytes 32) : Option (List Nat) :=
-  let rec go : (i : Nat) → List Nat → Option (List Nat)
-    | 0, acc => some acc
-    | i + 1, acc =>
-      let idx := readBits D_sel (HYPER_BITS + i * UPORS_HEIGHT) UPORS_HEIGHT
-      match insertUniqueSorted idx acc with
-      | none => none
-      | some acc' => go i acc'
-  go UPORS_K []
+  extractUporsLeavesAux D_sel 0 UPORS_SELECT_MAX_DRAWS []
 
-/-- Declarative indexed-block rejection sampler for U-PORS codeword indices (`SPEC.md §10.3`, ZERO XOF!). -/
+private theorem extractUporsLeavesAux_spec (D_sel : Bytes 32) :
+    ∀ (i rem : Nat) (acc leaves : List Nat),
+      StrictlySorted acc →
+      extractUporsLeavesAux D_sel i rem acc = some leaves →
+      leaves.length = UPORS_K ∧ StrictlySorted leaves
+  | _, 0, acc, leaves, hs, heq => by
+    unfold extractUporsLeavesAux at heq
+    by_cases h : acc.length = UPORS_K
+    · rw [ite_eq_left h] at heq; cases heq; exact ⟨h, hs⟩
+    · rw [ite_eq_right h] at heq; cases heq
+  | i, rem + 1, acc, leaves, hs, heq => by
+    unfold extractUporsLeavesAux at heq
+    by_cases h : acc.length = UPORS_K
+    · rw [ite_eq_left h] at heq; cases heq; exact ⟨h, hs⟩
+    · rw [ite_eq_right h] at heq
+      exact extractUporsLeavesAux_spec D_sel (i + 1) rem _ leaves (insertSortedDedup_strictlySorted _ hs) heq
+
+theorem extractUporsLeaves_spec {D_sel : Bytes 32} {leaves : List Nat}
+    (h : extractUporsLeaves D_sel = some leaves) :
+    leaves.length = UPORS_K ∧ leaves.Nodup := by
+  have ⟨hlen, hsort⟩ := extractUporsLeavesAux_spec D_sel 0 UPORS_SELECT_MAX_DRAWS [] leaves trivial h
+  exact ⟨hlen, strictlySorted_nodup hsort⟩
+
+/-- Declarative indexed-block rejection sampler for U-PORS codeword indices (`SPEC.md §8.2`, ZERO XOF):
+    extracts `28` consecutive 9-bit draws from one 32-byte `FEW_CODE` block, accepting `< 376`. -/
 def extractUporsCodesFromBlock (blk : Bytes 32) : (j : Nat) → List (Fin UPORS_C)
   | 0 => []
   | j + 1 =>
@@ -234,57 +331,118 @@ def extractUporsCodesFromBlock (blk : Bytes 32) : (j : Nat) → List (Fin UPORS_
     let draw := readBits blk (j * 9) 9
     if h : draw < UPORS_C then rest ++ [⟨draw, h⟩] else rest
 
-def extractUporsCodesAux (H : HashOracle) (K_pub : Bytes 32) (D_sel : Bytes 32) :
-    (fuel blockIdx : Nat) → List (Fin UPORS_C) → List (Fin UPORS_C)
-  | 0, _, acc => acc
+/-- `FEW_CODE` block hash (`SPEC.md §§5, 8.2`):
+    `layer = 0x80`, `a = block_idx`, `b = 0`, data = `D_seed || u32_le(ctr_ft)`. -/
+def fewCodeBlock (H : HashOracle) (K_pub : Bytes 32) (D_seed : Bytes 32) (ctrFt : UInt32) (blkIdx : Nat) : Bytes 32 :=
+  let twk : Tweak := ⟨.fewCode, uporsLayerByte, 0, by decide, 0, UInt16.ofNat blkIdx, 0⟩
+  H.keyed K_pub (encodeTweak twk ++ D_seed.toList ++ encodeLE ctrFt.toNat 4)
+
+/-- Bounded-block `FEW_CODE` extraction returning `Option (List (Fin UPORS_C))`:
+    scans up to `fuel` indexed blocks (`block_idx = 0, 1, ...`) and returns `none` (fail-closed)
+    if fewer than `UPORS_K` (10) draws `< 376` are produced — NEVER defaulting to `0`! -/
+def extractUporsCodesAux (H : HashOracle) (K_pub : Bytes 32) (D_seed : Bytes 32) (ctrFt : UInt32) :
+    (fuel blockIdx : Nat) → List (Fin UPORS_C) → Option (List (Fin UPORS_C))
+  | 0, _, acc =>
+    if acc.length ≥ UPORS_K then some (acc.take UPORS_K) else none
   | fuel + 1, blkIdx, acc =>
-    if acc.length ≥ UPORS_K then acc.take UPORS_K
+    if acc.length ≥ UPORS_K then some (acc.take UPORS_K)
     else
-      let twk : Tweak := ⟨.fewCode, 0, 0, by decide, 0, 0, UInt32.ofNat blkIdx⟩
-      let blk := H.keyed K_pub (encodeTweak twk ++ D_sel.toList)
+      let blk := fewCodeBlock H K_pub D_seed ctrFt blkIdx
       let acc' := acc ++ extractUporsCodesFromBlock blk 28
-      extractUporsCodesAux H K_pub D_sel fuel (blkIdx + 1) acc'
+      extractUporsCodesAux H K_pub D_seed ctrFt fuel (blkIdx + 1) acc'
 
-/-- Extract the `10` U-PORS codeword indices (`Fin 376`). -/
+private theorem extractUporsCodesAux_length (H : HashOracle) (K_pub : Bytes 32)
+    (D_seed : Bytes 32) (ctrFt : UInt32) :
+    ∀ (fuel blkIdx : Nat) (acc res : List (Fin UPORS_C)),
+      extractUporsCodesAux H K_pub D_seed ctrFt fuel blkIdx acc = some res →
+      res.length = UPORS_K
+  | 0, _, acc, res, heq => by
+    unfold extractUporsCodesAux at heq
+    by_cases h : acc.length ≥ UPORS_K
+    · rw [ite_eq_left h] at heq; cases heq; simp; omega
+    · rw [ite_eq_right h] at heq; cases heq
+  | fuel + 1, blkIdx, acc, res, heq => by
+    unfold extractUporsCodesAux at heq
+    by_cases h : acc.length ≥ UPORS_K
+    · rw [ite_eq_left h] at heq; cases heq; simp; omega
+    · rw [ite_eq_right h] at heq
+      exact extractUporsCodesAux_length H K_pub D_seed ctrFt fuel (blkIdx + 1) _ res heq
+
+/-- Extract the `10` U-PORS codeword indices (`Fin 376`) over `u16` block index space (`fuel = 65536`),
+    failing closed (`none`) if `u16` block indices exhaust (`SPEC.md §8.2`). -/
 @[irreducible]
-def extractUporsCodes (H : HashOracle) (K_pub : Bytes 32) (D_sel : Bytes 32) : Fin UPORS_K → Fin UPORS_C :=
-  let lst := extractUporsCodesAux H K_pub D_sel 64 0 []
-  fun j => lst.getD j.val ⟨0, by decide⟩
+def extractUporsCodes (H : HashOracle) (K_pub : Bytes 32) (D_seed : Bytes 32) (ctrFt : UInt32) :
+    Option (Fin UPORS_K → Fin UPORS_C) :=
+  match h : extractUporsCodesAux H K_pub D_seed ctrFt 65536 0 [] with
+  | none => none
+  | some lst =>
+    have hlen : lst.length = UPORS_K :=
+      extractUporsCodesAux_length H K_pub D_seed ctrFt 65536 0 [] lst h
+    some (fun j => lst[j.val]'(by omega))
 
-/-- Extracted Octopus sibling list for `leaves` in the height-10 U-PORS tree. -/
+/-- Extracted Octopus sibling list for `leaves` in the height-10 U-PORS tree (`SPEC.md §10.2`). -/
 def uporsExtract (H : HashOracle) (K_sec K_pub : Bytes 32)
     (leafAddr : Nat) (hAddr : leafAddr < 2 ^ 48) (leaves : List Nat) : List Nat × List (Bytes 16) :=
   octopusExtractAux (treeCombine H K_pub uporsLayerByte leafAddr hAddr)
     (uporsLeafFn H K_sec K_pub leafAddr hAddr) 0 UPORS_HEIGHT leaves
 
-/-- Validity predicate for a U-PORS grinding counter `ctrFt` (`SPEC.md §10.2–10.3`). -/
+/-- Validity predicate for a U-PORS grinding counter `ctrFt` (`SPEC.md §§8.1–8.2, 10.2`). -/
 def ValidUporsSelection (H : HashOracle) (K_sec K_pub : Bytes 32) (D_seed : Bytes 32) (ctrFt : UInt32) : Prop :=
   let D_sel := fewSelectDigest H K_pub D_seed ctrFt
   let leafAddr := extractLeafAddr D_sel
   let hAddr48 := extractLeafAddr_lt_48 D_sel
-  ∃ leaves : List Nat,
+  (∃ leaves : List Nat,
     extractUporsLeaves D_sel = some leaves ∧
     leaves.length = UPORS_K ∧
     (uporsExtract H K_sec K_pub leafAddr hAddr48 leaves).1 = [0] ∧
-    (uporsExtract H K_sec K_pub leafAddr hAddr48 leaves).2.length ≤ UPORS_M_MAX
+    (uporsExtract H K_sec K_pub leafAddr hAddr48 leaves).2.length ≤ UPORS_M_MAX) ∧
+  (∃ codes : Fin UPORS_K → Fin UPORS_C, extractUporsCodes H K_pub D_seed ctrFt = some codes)
 
 -- ---------------------------------------------------------------------------
--- S-WOTS+Z Message Grinding & Hypertree Addressing (`SPEC.md §11`)
+-- S-WOTS+Z Message Grinding & Hypertree Addressing (`SPEC.md §§5, 11`)
 -- ---------------------------------------------------------------------------
 
-/-- `h = ShortHash(K_pub, tweak(ONE_TIME_MSG, layer, tree, leaf, ctr), msg)` (`SPEC.md §11.1`). -/
+/-- `ONE_TIME_MSG` (`SPEC.md §§5, 11.1`): fixed address tweak `(layer, tree, leaf, 0, 0)`,
+    appended data = `msg || u32_le(ctr)`. -/
 def wotsMsgHash (H : HashOracle) (K_pub : Bytes 32)
     (layer : UInt8) (tree : Nat) (hTree : tree < 2 ^ 48) (leaf : UInt16)
     (msg : Bytes 16) (ctr : UInt16) : Bytes 16 :=
-  shortHash H K_pub ⟨.oneTimeMsg, layer, tree, hTree, leaf, 0, UInt32.ofNat ctr.toNat⟩ msg.toList
+  shortHash H K_pub ⟨.oneTimeMsg, layer, tree, hTree, leaf, 0, 0⟩
+    (msg.toList ++ encodeLE ctr.toNat 4)
 
 /-- 120-bit little-endian Sperner rank extracted from `h[1..16]` (`SPEC.md §11.1`). -/
 def wotsRank (h : Bytes 16) : Nat :=
   decodeLE (h.toList.drop 1)
 
-/-- Validity predicate on an `S-WOTS+Z` message hash: `h[0] = 0` (`z = 8`) and `rank < sliceCount 40 24 468`. -/
+private theorem decodeLE_lt_pow : ∀ (bs : List UInt8), decodeLE bs < 256 ^ bs.length
+  | [] => by simp [decodeLE]
+  | b :: bs => by
+    simp only [decodeLE, List.length_cons, Nat.pow_succ]
+    have hb : b.toNat < 256 := b.toBitVec.isLt
+    have ih := decodeLE_lt_pow bs
+    have hmul : 256 * decodeLE bs + b.toNat < 256 * (decodeLE bs + 1) := by omega
+    have hpow : 256 * (decodeLE bs + 1) ≤ 256 * 256 ^ bs.length := Nat.mul_le_mul_left 256 ih
+    rw [Nat.mul_comm (256 ^ bs.length) 256]
+    omega
+
+/-- Every 16-byte hash automatically satisfies `wotsRank h < 2^120`. -/
+theorem wotsRank_lt_pow120 (h : Bytes 16) : wotsRank h < 2 ^ 120 := by
+  unfold wotsRank
+  have hlt := decodeLE_lt_pow (h.toList.drop 1)
+  have hlen : (h.toList.drop 1).length = 15 := by simp
+  rw [hlen] at hlt
+  have hpow : 256 ^ 15 = 2 ^ 120 := by decide
+  omega
+
+/-- Every 16-byte hash automatically satisfies `wotsRank h < sliceCount 40 24 468`
+    (proved directly via `wots_sperner_gt_pow120` — ZERO extra hypothesis needed!). -/
+theorem wotsRank_lt_sliceCount (h : Bytes 16) :
+    wotsRank h < sliceCount WOTS_W WOTS_N WOTS_SUM :=
+  Nat.lt_trans (wotsRank_lt_pow120 h) wots_sperner_gt_pow120
+
+/-- Validity predicate on an `S-WOTS+Z` message hash (`SPEC.md §11.1`): `h[0] = 0` (`z = 8` leading zero bits). -/
 def ValidWotsHash (h : Bytes 16) : Prop :=
-  h ⟨0, by decide⟩ = 0 ∧ wotsRank h < sliceCount WOTS_W WOTS_N WOTS_SUM
+  h ⟨0, by decide⟩ = 0
 
 /-- If two valid `S-WOTS+Z` hashes have equal 120-bit rank, they are byte-for-byte EQUAL (`16 B` collision!). -/
 theorem validWotsHash_eq_of_rank_eq {h₁ h₂ : Bytes 16}
@@ -325,7 +483,7 @@ theorem validWotsHash_eq_of_rank_eq {h₁ h₂ : Bytes 16}
       have hb0 : b = h₂ ⟨0, by decide⟩ := by
         have h0 : h₂.toList[0]'(by simp) = h₂ ⟨0, by decide⟩ := by simp [Bytes.toList]
         simpa [hl2] using h0
-      rw [ha0, hb0, hv₁.1, hv₂.1, hdrop]
+      rw [ha0, hb0, hv₁, hv₂, hdrop]
 
 /-- Height of hypertree layer `ℓ` indexed by `Nat` (`7` for `ℓ ≠ 3`, `12` for `ℓ = 3`). -/
 def layerHeightNat (ℓ : Nat) : Nat :=
@@ -372,7 +530,7 @@ theorem top_layerTree_zero {leafAddr : Nat} (h : leafAddr < 2 ^ HYPER_BITS) :
   exact Nat.div_eq_of_lt h
 
 -- ---------------------------------------------------------------------------
--- Imprint Wire Structures (`SPEC.md §12`: Exact 3,292 Bytes)
+-- Imprint Wire Structures (`SPEC.md §11.2`: Exact 3,292 Bytes)
 -- ---------------------------------------------------------------------------
 
 /-- One hypertree layer signature (`ℓ < 4`): 2-byte `S-WOTS+Z` counter + 24 chain values + `layerHeight ℓ` auth nodes. -/
@@ -381,7 +539,7 @@ structure LayerSig (ℓ : Fin LAYERS) where
   wots : Fin WOTS_N → Bytes 16
   auth : Fin (layerHeightNat ℓ.val) → Bytes 16
 
-/-- Complete structured `BLINCS-128-A2` imprint (`SPEC.md §12`: `3,292` bytes). -/
+/-- Complete structured `BLINCS-128-A2` imprint (`SPEC.md §11.2`: `3,292` bytes). -/
 structure Imprint where
   e           : Bytes 16
   r           : Bytes 16
@@ -514,18 +672,18 @@ def uporsSignChains (H : HashOracle) (K_sec K_pub : Bytes 32)
     chainSignGeneric H K_sec K_pub uporsLayerByte leafAddr hAddr (UInt16.ofNat leaf)
       (fun c => uporsDigit (codes j) c)
 
-/-- Declarative U-PORS Octopus verification (returns `some root` iff sorted distinct 10 leaves climb cleanly
-    to root `[0]` AND every trailing unused sibling slot equals `zero16`, `SPEC.md §10.2–10.3`). -/
+/-- Declarative U-PORS Octopus verification (`SPEC.md §§8.1–8.2, 10.2`):
+    returns `some root` iff 10 distinct leaves extract cleanly from `D_sel`, 10 codewords extract cleanly
+    from `FEW_CODE(D_seed, ctr_ft)`, Octopus climbs to `[0]`, AND all unused trailing sibling slots equal `zero16`. -/
 def uporsVerify (H : HashOracle) (K_pub : Bytes 32)
-    (D_sel : Bytes 32)
+    (D_seed : Bytes 32) (ctrFt : UInt32)
     (chains : Fin UPORS_K → Fin UPORS_N → Bytes 16)
     (sibs : Fin UPORS_M_MAX → Bytes 16) : Option (Bytes 16) :=
+  let D_sel := fewSelectDigest H K_pub D_seed ctrFt
   let leafAddr := extractLeafAddr D_sel
   let hAddr48 := extractLeafAddr_lt_48 D_sel
-  let codes := extractUporsCodes H K_pub D_sel
-  match extractUporsLeaves D_sel with
-  | none => none
-  | some leaves =>
+  match extractUporsLeaves D_sel, extractUporsCodes H K_pub D_seed ctrFt with
+  | some leaves, some codes =>
     if hlen : leaves.length = UPORS_K then
       let leafPairs : List (Nat × Bytes 16) :=
         List.ofFn (fun j : Fin UPORS_K =>
@@ -539,6 +697,7 @@ def uporsVerify (H : HashOracle) (K_pub : Bytes 32)
         if remSibs.all (fun z => z.toList == zero16.toList) then some root else none
       | _ => none
     else none
+  | _, _ => none
 
 /-- Declarative `S-WOTS+Z` hypertree signing for all 4 layers given valid counters `layerCtrs` (`SPEC.md §11`). -/
 def hypertreeSign (H : HashOracle) (K_sec K_pub : Bytes 32)
@@ -584,7 +743,7 @@ def hypertreeVerifyUpTo (H : HashOracle) (K_pub : Bytes 32)
     let (stepOk, nextNode) := verifyLayerStep H K_pub leafAddr hAddr ⟨k, hk⟩ prevNode (sigs ⟨k, hk⟩)
     (prevOk ∧ stepOk, nextNode)
 
-/-- Declarative `BLINCS-128-A2` imprinting given the ground counters `(ctrFt, layerCtrs)` (`SPEC.md §§6–12`). -/
+/-- Declarative `BLINCS-128-A2` imprinting given the ground counters `(ctrFt, layerCtrs)` (`SPEC.md §§6–11`). -/
 def imprintWithCounters (H : HashOracle) (seed draw : Bytes 32) (ctx M : List UInt8)
     (ctrFt : UInt32) (layerCtrs : Fin LAYERS → UInt16) : Imprint :=
   let k := deriveKeys H seed
@@ -597,7 +756,7 @@ def imprintWithCounters (H : HashOracle) (seed draw : Bytes 32) (ctx M : List UI
   let hAddr := extractLeafAddr_lt D_sel
   let hAddr48 := extractLeafAddr_lt_48 D_sel
   let leaves := (extractUporsLeaves D_sel).getD []
-  let codes := extractUporsCodes H k.k_pub D_sel
+  let codes := (extractUporsCodes H k.k_pub D_seed ctrFt).getD (fun _ => ⟨0, by decide⟩)
   let sibs := (uporsExtract H k.k_sec k.k_pub leafAddr hAddr48 leaves).2
   { e           := e
     r           := r
@@ -606,7 +765,7 @@ def imprintWithCounters (H : HashOracle) (seed draw : Bytes 32) (ctx M : List UI
     uporsSibs   := padSibs sibs
     layers      := hypertreeSign H k.k_sec k.k_pub leafAddr hAddr layerCtrs }
 
-/-- Declarative `BLINCS-128-A2` verification (`SPEC.md §§6–12`). -/
+/-- Declarative `BLINCS-128-A2` verification (`SPEC.md §§6–11`). -/
 def verify (H : HashOracle) (id : Bytes 32) (ctx M : List UInt8) (σ : Imprint) : Prop :=
   ctx.length ≤ MAX_CONTEXT_LEN ∧
   let k_pub := verifierKPub H id
@@ -618,12 +777,12 @@ def verify (H : HashOracle) (id : Bytes 32) (ctx M : List UInt8) (σ : Imprint) 
   let leafAddr := extractLeafAddr D_sel
   let hAddr := extractLeafAddr_lt D_sel
   ∃ uporsNode : Bytes 16,
-    uporsVerify H k_pub D_sel σ.uporsChains σ.uporsSibs = some uporsNode ∧
+    uporsVerify H k_pub D_seed σ.ctrFt σ.uporsChains σ.uporsSibs = some uporsNode ∧
     let (htOk, htRoot) := hypertreeVerifyUpTo H k_pub leafAddr hAddr uporsNode σ.layers LAYERS (Nat.le_refl _)
     htOk ∧ htRoot = root
 
 -- ---------------------------------------------------------------------------
--- Completeness Proofs (`SPEC.md §§9–12`)
+-- Completeness Proofs (`SPEC.md §§8–11`)
 -- ---------------------------------------------------------------------------
 
 theorem uporsVerify_honest (H : HashOracle) (K_sec K_pub : Bytes 32) (D_seed : Bytes 32) (ctrFt : UInt32)
@@ -632,21 +791,20 @@ theorem uporsVerify_honest (H : HashOracle) (K_sec K_pub : Bytes 32) (D_seed : B
     let leafAddr := extractLeafAddr D_sel
     let hAddr48 := extractLeafAddr_lt_48 D_sel
     let leaves := (extractUporsLeaves D_sel).getD []
-    let codes := extractUporsCodes H K_pub D_sel
+    let codes := (extractUporsCodes H K_pub D_seed ctrFt).getD (fun _ => ⟨0, by decide⟩)
     let sibs := (uporsExtract H K_sec K_pub leafAddr hAddr48 leaves).2
-    uporsVerify H K_pub D_sel
+    uporsVerify H K_pub D_seed ctrFt
       (uporsSignChains H K_sec K_pub leafAddr hAddr48 leaves codes)
       (padSibs sibs) =
     some (uporsRoot H K_sec K_pub leafAddr hAddr48) := by
-  rcases hSel with ⟨leaves, hLeaves, hLen, hTop, hSibs⟩
+  rcases hSel with ⟨⟨leaves, hLeaves, hLen, hTop, hSibs⟩, ⟨codes, hCodes⟩⟩
   dsimp only
   let D_sel := fewSelectDigest H K_pub D_seed ctrFt
   let leafAddr := extractLeafAddr D_sel
   let hAddr48 := extractLeafAddr_lt_48 D_sel
-  let codes := extractUporsCodes H K_pub D_sel
   unfold uporsVerify
   dsimp only
-  rw [hLeaves]
+  rw [hLeaves, hCodes]
   simp only [Option.getD_some, hLen, ↓reduceDIte]
   have hMapEq : List.ofFn (fun j : Fin UPORS_K =>
       let leaf := leaves[j.val]'(by omega)
@@ -660,7 +818,7 @@ theorem uporsVerify_honest (H : HashOracle) (K_sec K_pub : Bytes 32) (D_seed : B
     · simp [hLen]
     · intro i h1 h2
       simp only [List.length_ofFn, List.length_map] at h1 h2
-      simp only [List.getElem_ofFn, List.getElem_map, treeNodeAt, uporsSignChains, uporsLeafFn]
+      simp only [List.getElem_ofFn, List.getElem_map, treeNodeAt, uporsSignChains, uporsLeafFn, treeLeafFn]
       have hget : leaves.getD i 0 = leaves[i]'(by omega) := by
         simp [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem (by omega : i < leaves.length)]
       rw [hget]
@@ -731,7 +889,7 @@ theorem hypertreeVerifyUpTo_honest (H : HashOracle) (K_sec K_pub : Bytes 32)
         chainLeafPk H K_sec K_pub (UInt8.ofNat k) (layerTree leafAddr k) (layerTree_lt_48 leafAddr k hAddr)
           (UInt16.ofNat (layerLeaf leafAddr k)) WOTS_N WOTS_STEPS :=
       chainVerifyGeneric_sign H K_sec K_pub (UInt8.ofNat k) (layerTree leafAddr k) (layerTree_lt_48 leafAddr k hAddr)
-        (UInt16.ofNat (layerLeaf leafAddr k)) WOTS_STEPS _ (fun c => wotsDigit_le_39 hv.2 c)
+        (UInt16.ofNat (layerLeaf leafAddr k)) WOTS_STEPS _ (fun c => wotsDigit_le_39 (wotsRank_lt_sliceCount _) c)
     rw [hchain, ofFn_listToFinFn]
     unfold honestLayerInput treeRoot
     exact merkleReconstruct_correct
@@ -750,11 +908,10 @@ private theorem top_root_eq (H : HashOracle) (K_sec K_pub : Bytes 32)
   simp only [hh]
 
 /--
-  **BLINCS-128-A2 Completeness Theorem:**
-  For ANY hash oracle `H`, ANY 32-byte `seed`, ANY 32-byte `draw`, ANY valid context `ctx`
-  (`ctx.length ≤ 255`), ANY message `M`, and ANY valid grinding counters `(ctrFt, layerCtrs)`,
-  the imprint produced by `imprintWithCounters H seed draw ctx M ctrFt layerCtrs`
-  ALWAYS verifies against `signetId H seed`!
+  **BLINCS-128-A2 Conditional Completeness Theorem:**
+  Given any hash oracle `H`, 32-byte `seed`, 32-byte `draw`, valid `ctx` (`≤ 255` bytes), `M`,
+  and valid grinding counters `(ctrFt, layerCtrs)` (including non-exhausted `FEW_CODE`),
+  `imprintWithCounters H seed draw ctx M ctrFt layerCtrs` always verifies against `signetId H seed`.
 -/
 theorem blincs_completeness (H : HashOracle) (seed draw : Bytes 32) (ctx M : List UInt8)
     (hCtx : ctx.length ≤ MAX_CONTEXT_LEN)
@@ -807,7 +964,7 @@ theorem blincs_completeness (H : HashOracle) (seed draw : Bytes 32) (ctx M : Lis
     exact top_root_eq H k.k_sec k.k_pub (layerTree leafAddr 3) (layerTree_lt_48 leafAddr 3 hAddr) (top_layerTree_zero hAddr)
 
 -- ---------------------------------------------------------------------------
--- Wire Serialization (`SPEC.md §12`: Exact 3,292 Bytes & Bijection)
+-- Wire Serialization & Parser Round-Trip (`SPEC.md §11.2`: Exact 3,292 Bytes)
 -- ---------------------------------------------------------------------------
 
 def encodeLayerSig {ℓ : Fin LAYERS} (s : LayerSig ℓ) : List UInt8 :=
@@ -818,7 +975,7 @@ theorem encodeLayerSig_length {ℓ : Fin LAYERS} (s : LayerSig ℓ) :
   unfold encodeLayerSig
   rw [List.length_append, List.length_append, encodeLE_length, flattenBytes16_length, flattenBytes16_length]
 
-/-- Canonical wire serialization of a `BLINCS-128-A2` imprint (`SPEC.md §12`). -/
+/-- Canonical wire serialization of a `BLINCS-128-A2` imprint (`SPEC.md §11.2`). -/
 def encodeImprint (σ : Imprint) : List UInt8 :=
   σ.e.toList
     ++ σ.r.toList
@@ -866,7 +1023,7 @@ private theorem encodeLayerSig_injective {ℓ : Fin LAYERS} {s₁ s₂ : LayerSi
   subst hctr; subst hwots; subst hauth
   rfl
 
-/-- **Wire Injectivity Theorem:** distinct structured `BLINCS-128-A2` imprints ALWAYS encode to distinct `3,292`-byte strings. -/
+/-- **Wire Injectivity Theorem:** distinct structured `BLINCS-128-A2` imprints encode to distinct `3,292`-byte strings. -/
 theorem encodeImprint_injective {σ₁ σ₂ : Imprint} (h : encodeImprint σ₁ = encodeImprint σ₂) : σ₁ = σ₂ := by
   unfold encodeImprint at h
   simp only [List.append_assoc] at h
@@ -912,5 +1069,298 @@ theorem encodeImprint_injective {σ₁ σ₂ : Imprint} (h : encodeImprint σ₁
   simp only at he hr hctrFt hchains hsibs hlayers
   subst he; subst hr; subst hctrFt; subst hchains; subst hsibs; subst hlayers
   rfl
+
+-- Total wire decoder returning `none` on any length `≠ 3,292` and inverting `encodeImprint`!
+private def readBytes16At (raw : List UInt8) (off : Nat) : Bytes 16 :=
+  fun i => raw.getD (off + i.val) 0
+
+private def readVec16At (raw : List UInt8) (off k : Nat) : Fin k → Bytes 16 :=
+  fun j => readBytes16At raw (off + j.val * 16)
+
+private def decodeLayerSigAt (raw : List UInt8) (off : Nat) (ℓ : Fin LAYERS) : LayerSig ℓ :=
+  { ctr  := UInt16.ofNat (decodeLE ((raw.drop off).take 2))
+    wots := readVec16At raw (off + 2) WOTS_N
+    auth := readVec16At raw (off + 2 + WOTS_N * 16) (layerHeightNat ℓ.val) }
+
+/-- Strict wire parser for `BLINCS-128-A2` (`SPEC.md §11.2`): rejects any length `≠ 3,292`. -/
+def decodeImprint (raw : List UInt8) : Option Imprint :=
+  if raw.length = IMPRINT_LEN then
+    some {
+      e           := readBytes16At raw 0
+      r           := readBytes16At raw 16
+      ctrFt       := UInt32.ofNat (decodeLE ((raw.drop 32).take 4))
+      uporsChains := fun j => readVec16At raw (36 + j.val * 48) UPORS_N
+      uporsSibs   := readVec16At raw 516 UPORS_M_MAX
+      layers      := fun ℓ =>
+        match ℓ with
+        | ⟨0, _⟩ => decodeLayerSigAt raw 1220 ⟨0, by decide⟩
+        | ⟨1, _⟩ => decodeLayerSigAt raw 1718 ⟨1, by decide⟩
+        | ⟨2, _⟩ => decodeLayerSigAt raw 2216 ⟨2, by decide⟩
+        | ⟨3, _⟩ => decodeLayerSigAt raw 2714 ⟨3, by decide⟩
+    }
+  else none
+
+/-- Wrong-length wire rejection theorem: any byte list of length `≠ 3,292` is rejected (`none`). -/
+theorem decodeImprint_bad_len {raw : List UInt8} (h : raw.length ≠ IMPRINT_LEN) :
+    decodeImprint raw = none := by
+  unfold decodeImprint
+  rw [ite_eq_right h]
+
+private theorem getD_append_left {α : Type} (xs ys : List α) (i : Nat) (d : α) (hi : i < xs.length) :
+    (xs ++ ys).getD i d = xs.getD i d := by
+  simp [List.getD_eq_getElem?_getD, List.getElem?_append_left hi]
+
+private theorem getD_append_right {α : Type} (xs ys : List α) (i : Nat) (d : α) (hi : xs.length ≤ i) :
+    (xs ++ ys).getD i d = ys.getD (i - xs.length) d := by
+  simp [List.getD_eq_getElem?_getD, List.getElem?_append_right hi]
+
+private theorem bytes16_toList_getD (b : Bytes 16) (i : Fin 16) :
+    b.toList.getD i.val 0 = b i := by
+  rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem (show i.val < b.toList.length by simp), Option.getD_some]
+  simp only [Bytes.toList, List.getElem_ofFn]
+
+private theorem drop_append_ge {α : Type} (xs ys : List α) (n : Nat) (h : xs.length ≤ n) :
+    (xs ++ ys).drop n = ys.drop (n - xs.length) := by
+  rw [List.drop_append, List.drop_eq_nil_of_le h, List.nil_append]
+
+private theorem readBytes16At_prefix (b : Bytes 16) (rest : List UInt8) :
+    readBytes16At (b.toList ++ rest) 0 = b := by
+  funext i
+  unfold readBytes16At
+  simp only [Nat.zero_add]
+  rw [getD_append_left _ _ _ _ (by simp)]
+  exact bytes16_toList_getD b i
+
+private theorem readBytes16At_shift (pre rest : List UInt8) (off : Nat) (h : pre.length ≤ off) :
+    readBytes16At (pre ++ rest) off = readBytes16At rest (off - pre.length) := by
+  funext i
+  unfold readBytes16At
+  rw [getD_append_right _ _ _ _ (by omega)]
+  have hsub : off + i.val - pre.length = off - pre.length + i.val := by omega
+  rw [hsub]
+
+private theorem readVec16At_shift (pre rest : List UInt8) (off k : Nat) (h : pre.length ≤ off) :
+    readVec16At (pre ++ rest) off k = readVec16At rest (off - pre.length) k := by
+  funext j
+  unfold readVec16At
+  rw [readBytes16At_shift pre rest (off + j.val * 16) (by omega)]
+  have hsub : off + j.val * 16 - pre.length = off - pre.length + j.val * 16 := by omega
+  rw [hsub]
+
+private theorem flatten_getD_const {m : Nat} :
+    ∀ (ls : List (List UInt8)), (∀ l ∈ ls, l.length = m) →
+      ∀ (j i : Nat) (hj : j < ls.length) (_hi : i < m),
+        ls.flatten.getD (j * m + i) 0 = (ls[j]'hj).getD i 0
+  | [], _, _, _, hj, _ => by simp at hj
+  | l :: ls, hlen, 0, i, _, hi => by
+    simp only [Nat.zero_mul, Nat.zero_add, List.flatten_cons, List.getElem_cons_zero]
+    exact getD_append_left l ls.flatten i 0 (by rw [hlen l (by simp)]; exact hi)
+  | l :: ls, hlen, j + 1, i, hj, hi => by
+    simp only [List.flatten_cons, List.getElem_cons_succ]
+    have hl : l.length = m := hlen l (by simp)
+    rw [getD_append_right l ls.flatten ((j + 1) * m + i) 0 (by rw [hl, Nat.succ_mul]; omega)]
+    have hsub : (j + 1) * m + i - l.length = j * m + i := by rw [hl, Nat.succ_mul]; omega
+    rw [hsub]
+    exact flatten_getD_const ls (fun x hx => hlen x (by simp [hx])) j i (by simp at hj; omega) hi
+
+private theorem readVec16At_prefix {k : Nat} (xs : Fin k → Bytes 16) (rest : List UInt8) :
+    readVec16At (flattenBytes16 xs ++ rest) 0 k = xs := by
+  funext j i
+  unfold readVec16At readBytes16At
+  simp only [Nat.zero_add]
+  have hlt : j.val * 16 + i.val < (flattenBytes16 xs).length := by
+    rw [flattenBytes16_length]
+    have hj := j.isLt; have hi := i.isLt; omega
+  rw [getD_append_left _ _ _ _ hlt]
+  unfold flattenBytes16
+  rw [flatten_getD_const (m := 16) _ (by intro l hl; rw [List.mem_ofFn] at hl; rcases hl with ⟨t, rfl⟩; simp)
+      j.val i.val (by simp) i.isLt]
+  simp only [List.getElem_ofFn]
+  exact bytes16_toList_getD (xs j) i
+
+private theorem decodeLayerSigAt_prefix {ℓ : Fin LAYERS} (s : LayerSig ℓ) (rest : List UInt8) :
+    decodeLayerSigAt (encodeLayerSig s ++ rest) 0 ℓ = s := by
+  unfold decodeLayerSigAt encodeLayerSig
+  simp only [List.append_assoc, List.drop_zero]
+  have htake : (encodeLE s.ctr.toNat 2 ++ (flattenBytes16 s.wots ++ (flattenBytes16 s.auth ++ rest))).take 2 =
+      encodeLE s.ctr.toNat 2 := by
+    rw [List.take_append_of_le_length (by simp [encodeLE_length]), List.take_of_length_le (by simp [encodeLE_length])]
+  have hctrNat : decodeLE (encodeLE s.ctr.toNat 2) = s.ctr.toNat :=
+    decodeLE_encodeLE 2 s.ctr.toNat (by have := s.ctr.toNat_lt; omega)
+  have hctr : UInt16.ofNat (decodeLE (encodeLE s.ctr.toNat 2)) = s.ctr := by
+    rw [hctrNat]; exact UInt16.ofNat_toNat
+  have hwots : readVec16At (encodeLE s.ctr.toNat 2 ++ (flattenBytes16 s.wots ++ (flattenBytes16 s.auth ++ rest))) 2 WOTS_N = s.wots := by
+    rw [readVec16At_shift _ _ 2 WOTS_N (by simp [encodeLE_length])]
+    simpa [encodeLE_length] using readVec16At_prefix s.wots (flattenBytes16 s.auth ++ rest)
+  have hauth : readVec16At (encodeLE s.ctr.toNat 2 ++ (flattenBytes16 s.wots ++ (flattenBytes16 s.auth ++ rest))) (2 + WOTS_N * 16) (layerHeightNat ℓ.val) = s.auth := by
+    rw [readVec16At_shift _ _ (2 + WOTS_N * 16) _ (by simp [encodeLE_length])]
+    have hsub : 2 + WOTS_N * 16 - (encodeLE s.ctr.toNat 2).length = WOTS_N * 16 := by simp [encodeLE_length]
+    rw [hsub, readVec16At_shift _ _ (WOTS_N * 16) _ (by simp [flattenBytes16_length])]
+    simpa [flattenBytes16_length] using readVec16At_prefix s.auth rest
+  cases s
+  simp only [htake] at hctr ⊢
+  simp only [hctr, hwots, hauth]
+
+/-- **Wire Parser Round-Trip Theorem:** `decodeImprint (encodeImprint σ) = some σ` for EVERY imprint `σ`! -/
+theorem decodeImprint_encodeImprint (σ : Imprint) :
+    decodeImprint (encodeImprint σ) = some σ := by
+  unfold decodeImprint
+  rw [ite_eq_left (encodeImprint_length σ)]
+  congr 1
+  let raw :=
+    σ.e.toList ++ (σ.r.toList ++ (encodeLE σ.ctrFt.toNat 4 ++
+      ((List.ofFn (fun j : Fin UPORS_K => flattenBytes16 (σ.uporsChains j))).flatten ++
+       (flattenBytes16 σ.uporsSibs ++
+        (encodeLayerSig (σ.layers ⟨0, by decide⟩) ++
+         (encodeLayerSig (σ.layers ⟨1, by decide⟩) ++
+          (encodeLayerSig (σ.layers ⟨2, by decide⟩) ++
+           encodeLayerSig (σ.layers ⟨3, by decide⟩))))))))
+  have hraw : encodeImprint σ = raw := by
+    unfold encodeImprint raw; simp only [List.append_assoc]
+  rw [hraw]
+  have hcLen : (List.ofFn (fun j : Fin UPORS_K => flattenBytes16 (σ.uporsChains j))).flatten.length = 480 := by
+    rw [flatten_length_const (m := 48)]; · simp [UPORS_K]
+    · intro l hl; rw [List.mem_ofFn] at hl; rcases hl with ⟨j, rfl⟩; rw [flattenBytes16_length]; rfl
+  have hl0Len : (encodeLayerSig (σ.layers ⟨0, by decide⟩)).length = 498 := by simp [encodeLayerSig_length, layerHeightNat, LOW_HEIGHT, WOTS_N]
+  have hl1Len : (encodeLayerSig (σ.layers ⟨1, by decide⟩)).length = 498 := by simp [encodeLayerSig_length, layerHeightNat, LOW_HEIGHT, WOTS_N]
+  have hl2Len : (encodeLayerSig (σ.layers ⟨2, by decide⟩)).length = 498 := by simp [encodeLayerSig_length, layerHeightNat, LOW_HEIGHT, WOTS_N]
+  have hsibsLen : (flattenBytes16 σ.uporsSibs).length = 704 := by rw [flattenBytes16_length]; rfl
+  have he : readBytes16At raw 0 = σ.e := readBytes16At_prefix σ.e _
+  have hr : readBytes16At raw 16 = σ.r := by
+    dsimp only [raw]
+    rw [readBytes16At_shift _ _ 16 (by simp)]
+    simpa using readBytes16At_prefix σ.r _
+  have hctrFt : UInt32.ofNat (decodeLE ((raw.drop 32).take 4)) = σ.ctrFt := by
+    dsimp only [raw]
+    have hdrop : (σ.e.toList ++ (σ.r.toList ++ (encodeLE σ.ctrFt.toNat 4 ++
+        ((List.ofFn (fun j : Fin UPORS_K => flattenBytes16 (σ.uporsChains j))).flatten ++
+         (flattenBytes16 σ.uporsSibs ++
+          (encodeLayerSig (σ.layers ⟨0, by decide⟩) ++
+           (encodeLayerSig (σ.layers ⟨1, by decide⟩) ++
+            (encodeLayerSig (σ.layers ⟨2, by decide⟩) ++
+             encodeLayerSig (σ.layers ⟨3, by decide⟩))))))))).drop 32 =
+        encodeLE σ.ctrFt.toNat 4 ++
+        ((List.ofFn (fun j : Fin UPORS_K => flattenBytes16 (σ.uporsChains j))).flatten ++
+         (flattenBytes16 σ.uporsSibs ++
+          (encodeLayerSig (σ.layers ⟨0, by decide⟩) ++
+           (encodeLayerSig (σ.layers ⟨1, by decide⟩) ++
+            (encodeLayerSig (σ.layers ⟨2, by decide⟩) ++
+             encodeLayerSig (σ.layers ⟨3, by decide⟩)))))) := by
+      rw [drop_append_ge _ _ 32 (by simp)]
+      have h16 : 32 - σ.e.toList.length = 16 := by simp
+      rw [h16, drop_append_ge _ _ 16 (by simp)]
+      simp
+    rw [hdrop, List.take_append_of_le_length (by simp [encodeLE_length]), List.take_of_length_le (by simp [encodeLE_length])]
+    rw [decodeLE_encodeLE 4 σ.ctrFt.toNat (by have := σ.ctrFt.toNat_lt; omega)]
+    exact UInt32.ofNat_toNat
+  have hchains : (fun j : Fin UPORS_K => readVec16At raw (36 + j.val * 48) UPORS_N) = σ.uporsChains := by
+    funext j c i
+    dsimp only [raw]
+    unfold readVec16At readBytes16At
+    rw [getD_append_right _ _ _ _ (by simp; omega)]
+    rw [getD_append_right _ _ _ _ (by simp; omega)]
+    rw [getD_append_right _ _ _ _ (by simp [encodeLE_length]; omega)]
+    have hidx : 36 + j.val * 48 + c.val * 16 + i.val - σ.e.toList.length - σ.r.toList.length - (encodeLE σ.ctrFt.toNat 4).length =
+        j.val * 48 + (c.val * 16 + i.val) := by
+      simp [encodeLE_length]; omega
+    rw [hidx, getD_append_left _ _ _ _ (by rw [hcLen]; have hj := j.isLt; have hc := c.isLt; have hi := i.isLt; unfold UPORS_K UPORS_N at *; omega)]
+    rw [flatten_getD_const (m := 48) _ (by intro l hl; rw [List.mem_ofFn] at hl; rcases hl with ⟨t, rfl⟩; rw [flattenBytes16_length]; rfl)
+        j.val (c.val * 16 + i.val) (by simp) (by have hc := c.isLt; have hi := i.isLt; unfold UPORS_N at *; omega)]
+    simp only [List.getElem_ofFn]
+    unfold flattenBytes16
+    rw [flatten_getD_const (m := 16) _ (by intro l hl; rw [List.mem_ofFn] at hl; rcases hl with ⟨t, rfl⟩; simp)
+        c.val i.val (by simp) i.isLt]
+    simp only [List.getElem_ofFn]
+    exact bytes16_toList_getD (σ.uporsChains j c) i
+  have hsibs : readVec16At raw 516 UPORS_M_MAX = σ.uporsSibs := by
+    dsimp only [raw]
+    rw [readVec16At_shift _ _ 516 _ (by simp)]
+    rw [readVec16At_shift _ _ _ _ (by simp)]
+    rw [readVec16At_shift _ _ _ _ (by simp [encodeLE_length])]
+    rw [readVec16At_shift _ _ _ _ (by rw [hcLen]; simp [encodeLE_length])]
+    have h0 : 516 - σ.e.toList.length - σ.r.toList.length - (encodeLE σ.ctrFt.toNat 4).length -
+        (List.ofFn (fun j : Fin UPORS_K => flattenBytes16 (σ.uporsChains j))).flatten.length = 0 := by
+      rw [hcLen]; simp [encodeLE_length]
+    rw [h0]
+    exact readVec16At_prefix σ.uporsSibs _
+  have hdecShift : ∀ (pre rest : List UInt8) (off : Nat) (ℓ : Fin LAYERS),
+      pre.length ≤ off → decodeLayerSigAt (pre ++ rest) off ℓ = decodeLayerSigAt rest (off - pre.length) ℓ := by
+    intro pre rest off ℓ hle
+    unfold decodeLayerSigAt
+    have hd : (pre ++ rest).drop off = rest.drop (off - pre.length) := drop_append_ge pre rest off hle
+    have hw : readVec16At (pre ++ rest) (off + 2) WOTS_N = readVec16At rest (off - pre.length + 2) WOTS_N := by
+      rw [readVec16At_shift pre rest (off + 2) WOTS_N (by omega)]
+      have : off + 2 - pre.length = off - pre.length + 2 := by omega
+      rw [this]
+    have ha : readVec16At (pre ++ rest) (off + 2 + WOTS_N * 16) (layerHeightNat ℓ.val) =
+              readVec16At rest (off - pre.length + 2 + WOTS_N * 16) (layerHeightNat ℓ.val) := by
+      rw [readVec16At_shift pre rest (off + 2 + WOTS_N * 16) _ (by omega)]
+      have : off + 2 + WOTS_N * 16 - pre.length = off - pre.length + 2 + WOTS_N * 16 := by omega
+      rw [this]
+    rw [hd, hw, ha]
+  have hlayers : (fun ℓ : Fin LAYERS =>
+      match ℓ with
+      | ⟨0, _⟩ => decodeLayerSigAt raw 1220 ⟨0, by decide⟩
+      | ⟨1, _⟩ => decodeLayerSigAt raw 1718 ⟨1, by decide⟩
+      | ⟨2, _⟩ => decodeLayerSigAt raw 2216 ⟨2, by decide⟩
+      | ⟨3, _⟩ => decodeLayerSigAt raw 2714 ⟨3, by decide⟩) = σ.layers := by
+    funext ℓ
+    rcases ℓ with ⟨v, hv⟩
+    match v with
+    | 0 =>
+      dsimp only [raw]
+      rw [hdecShift _ _ 1220 _ (by simp), hdecShift _ _ _ _ (by simp),
+          hdecShift _ _ _ _ (by simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen]; simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen, hsibsLen]; simp [encodeLE_length])]
+      have h0 : 1220 - σ.e.toList.length - σ.r.toList.length - (encodeLE σ.ctrFt.toNat 4).length -
+          (List.ofFn (fun j : Fin UPORS_K => flattenBytes16 (σ.uporsChains j))).flatten.length -
+          (flattenBytes16 σ.uporsSibs).length = 0 := by rw [hcLen, hsibsLen]; simp [encodeLE_length]
+      rw [h0]; exact decodeLayerSigAt_prefix (σ.layers ⟨0, by decide⟩) _
+    | 1 =>
+      dsimp only [raw]
+      rw [hdecShift _ _ 1718 _ (by simp), hdecShift _ _ _ _ (by simp),
+          hdecShift _ _ _ _ (by simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen]; simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen, hsibsLen]; simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen, hsibsLen, hl0Len]; simp [encodeLE_length])]
+      have h0 : 1718 - σ.e.toList.length - σ.r.toList.length - (encodeLE σ.ctrFt.toNat 4).length -
+          (List.ofFn (fun j : Fin UPORS_K => flattenBytes16 (σ.uporsChains j))).flatten.length -
+          (flattenBytes16 σ.uporsSibs).length - (encodeLayerSig (σ.layers ⟨0, by decide⟩)).length = 0 := by
+        rw [hcLen, hsibsLen, hl0Len]; simp [encodeLE_length]
+      rw [h0]; exact decodeLayerSigAt_prefix (σ.layers ⟨1, by decide⟩) _
+    | 2 =>
+      dsimp only [raw]
+      rw [hdecShift _ _ 2216 _ (by simp), hdecShift _ _ _ _ (by simp),
+          hdecShift _ _ _ _ (by simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen]; simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen, hsibsLen]; simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen, hsibsLen, hl0Len]; simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen, hsibsLen, hl0Len, hl1Len]; simp [encodeLE_length])]
+      have h0 : 2216 - σ.e.toList.length - σ.r.toList.length - (encodeLE σ.ctrFt.toNat 4).length -
+          (List.ofFn (fun j : Fin UPORS_K => flattenBytes16 (σ.uporsChains j))).flatten.length -
+          (flattenBytes16 σ.uporsSibs).length - (encodeLayerSig (σ.layers ⟨0, by decide⟩)).length -
+          (encodeLayerSig (σ.layers ⟨1, by decide⟩)).length = 0 := by
+        rw [hcLen, hsibsLen, hl0Len, hl1Len]; simp [encodeLE_length]
+      rw [h0]; exact decodeLayerSigAt_prefix (σ.layers ⟨2, by decide⟩) _
+    | 3 =>
+      dsimp only [raw]
+      rw [hdecShift _ _ 2714 _ (by simp), hdecShift _ _ _ _ (by simp),
+          hdecShift _ _ _ _ (by simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen]; simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen, hsibsLen]; simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen, hsibsLen, hl0Len]; simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen, hsibsLen, hl0Len, hl1Len]; simp [encodeLE_length]),
+          hdecShift _ _ _ _ (by rw [hcLen, hsibsLen, hl0Len, hl1Len, hl2Len]; simp [encodeLE_length])]
+      have h0 : 2714 - σ.e.toList.length - σ.r.toList.length - (encodeLE σ.ctrFt.toNat 4).length -
+          (List.ofFn (fun j : Fin UPORS_K => flattenBytes16 (σ.uporsChains j))).flatten.length -
+          (flattenBytes16 σ.uporsSibs).length - (encodeLayerSig (σ.layers ⟨0, by decide⟩)).length -
+          (encodeLayerSig (σ.layers ⟨1, by decide⟩)).length - (encodeLayerSig (σ.layers ⟨2, by decide⟩)).length = 0 := by
+        rw [hcLen, hsibsLen, hl0Len, hl1Len, hl2Len]; simp [encodeLE_length]
+      rw [h0]
+      have h3 := decodeLayerSigAt_prefix (σ.layers ⟨3, by decide⟩) []
+      simpa using h3
+    | n + 4 => unfold LAYERS at hv; omega
+  rw [he, hr, hctrFt, hchains, hsibs, hlayers]
 
 end Blincs

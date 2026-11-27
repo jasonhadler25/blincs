@@ -1,14 +1,15 @@
 /-
-  BLINCS-128-7x5 Declarative Specification: Binary Merkle Trees.
-  Pure structural recursion on tree height `h` (used identically for height-5
-  hypertree layers and height-8 FORS trees).
+  BLINCS-128-A2 Declarative Specification: Binary Merkle Trees & Bottom-Up Octopus Multi-Proofs.
+  Pure structural recursion on tree height `h` (used for the `12+7+7+7` hypertree layers
+  and the single height-10 `U-PORS` Octopus tree).
   Mechanically proves:
     1. Exact authentication path length (`(merklePath ...).length = h`).
     2. Exact Merkle reconstruction completeness (`merkleReconstruct ... (merklePath ...) = merkleNode ...`).
-    3. **Constructive Merkle Forgery Collision Extractor**: if a forged leaf `leaf' ≠ leaves idx`
-       reconstructs to the true root under ANY authentication path of length `h`, then there exists
-       an explicit `(level, pos)` and two distinct child pairs `(L₁, R₁) ≠ (L₂, R₂)` hashing to the
-       same node value (`combine level pos L₁ R₁ = combine level pos L₂ R₂`).
+    3. **Target-Bound Constructive Merkle & Octopus Forgery Collision Extractors**:
+       if a forged leaf (or opened Octopus leaf list) reconstructs to the honest root, then
+       there exists an explicit `(level, pos)` and forged child pair `(L₁, R₁)` distinct from
+       the exact honest child pair `(treeNodeAt ... (level - 1) (2 * pos), treeNodeAt ... (level - 1) (2 * pos + 1))`
+       that hashes to the exact honest parent node `treeNodeAt ... level pos`.
 -/
 
 namespace Blincs
@@ -252,23 +253,6 @@ theorem merkle_forgery_collision_aux {H : Type} (combine : Nat → Nat → H →
         exact ⟨lvl, p, L₁, R₁, L₂, R₂, h1, by omega, hdiff, hcol⟩
       · exact ⟨h + 1, pos, topSib, subForged, sibHonest, subHonest, by omega, Nat.le_refl _, Or.inr hsub, hroot⟩
 
-/-- **Top-level Merkle Forgery Collision Theorem.** -/
-theorem merkle_forgery_collision {H : Type} (combine : Nat → Nat → H → H → H)
-    (h : Nat) (leaves : Fin (2 ^ h) → H) (idx : Nat) (hi : idx < 2 ^ h)
-    (leaf' : H) (path : List H) (hlen : path.length = h)
-    (hne : leaf' ≠ leaves ⟨idx, hi⟩)
-    (hroot : merkleReconstruct combine idx leaf' path = merkleNode combine h 0 leaves) :
-    ∃ level p L₁ R₁ L₂ R₂,
-      1 ≤ level ∧ level ≤ h ∧
-      (L₁ ≠ L₂ ∨ R₁ ≠ R₂) ∧
-      combine level p L₁ R₁ = combine level p L₂ R₂ := by
-  apply merkle_forgery_collision_aux combine h 0 leaves idx hi leaf' path hlen hne
-  simpa [merkleReconstruct] using hroot
-
--- ---------------------------------------------------------------------------
--- Single-Tree Bottom-Up Octopus Multi-Proofs (`SPEC.md §10.2`, U-PORS)
--- ---------------------------------------------------------------------------
-
 /-- Honest bottom-up binary Merkle node at `(level, p)` over a leaf oracle `leafFn : Nat → H`. -/
 def treeNodeAt {H : Type} (combine : Nat → Nat → H → H → H) (leafFn : Nat → H) :
     (level : Nat) → (p : Nat) → H
@@ -277,6 +261,154 @@ def treeNodeAt {H : Type} (combine : Nat → Nat → H → H → H) (leafFn : Na
     combine (level + 1) p
       (treeNodeAt combine leafFn level (2 * p))
       (treeNodeAt combine leafFn level (2 * p + 1))
+
+private theorem merkleNode_eq_treeNodeAt_aux {H : Type} (combine : Nat → Nat → H → H → H)
+    (leafFn : Nat → H) :
+    ∀ (h pos : Nat) (leaves : Fin (2 ^ h) → H),
+      (∀ i : Fin (2 ^ h), leaves i = leafFn (pos * 2 ^ h + i.val)) →
+      merkleNode combine h pos leaves = treeNodeAt combine leafFn h pos
+  | 0, pos, leaves, hmatch => by
+    simp only [merkleNode, treeNodeAt]
+    simpa using hmatch ⟨0, by decide⟩
+  | h + 1, pos, leaves, hmatch => by
+    simp only [merkleNode, treeNodeAt]
+    have hL : merkleNode combine h (2 * pos) (leftHalf leaves) = treeNodeAt combine leafFn h (2 * pos) := by
+      apply merkleNode_eq_treeNodeAt_aux combine leafFn h (2 * pos) (leftHalf leaves)
+      intro i
+      have h1 := hmatch ⟨i.val, by have := i.isLt; rw [Nat.pow_succ]; omega⟩
+      have h2 : pos * 2 ^ (h + 1) + i.val = (2 * pos) * 2 ^ h + i.val := by
+        rw [Nat.pow_succ, Nat.mul_comm (2 ^ h) 2, ← Nat.mul_assoc, Nat.mul_comm pos 2]
+      simpa [leftHalf, h2] using h1
+    have hR : merkleNode combine h (2 * pos + 1) (rightHalf leaves) = treeNodeAt combine leafFn h (2 * pos + 1) := by
+      apply merkleNode_eq_treeNodeAt_aux combine leafFn h (2 * pos + 1) (rightHalf leaves)
+      intro i
+      have h1 := hmatch ⟨2 ^ h + i.val, by have := i.isLt; rw [Nat.pow_succ]; omega⟩
+      have h2 : pos * 2 ^ (h + 1) + (2 ^ h + i.val) = (2 * pos + 1) * 2 ^ h + i.val := by
+        rw [Nat.pow_succ, Nat.mul_comm (2 ^ h) 2, ← Nat.mul_assoc, Nat.mul_comm pos 2, Nat.add_mul, Nat.one_mul]
+        omega
+      simpa [rightHalf, h2] using h1
+    rw [hL, hR]
+
+theorem merkleNode_eq_treeNodeAt {H : Type} (combine : Nat → Nat → H → H → H)
+    (leafFn : Nat → H) (h : Nat) (leaves : Fin (2 ^ h) → H)
+    (hmatch : ∀ i : Fin (2 ^ h), leaves i = leafFn i.val) :
+    merkleNode combine h 0 leaves = treeNodeAt combine leafFn h 0 :=
+  merkleNode_eq_treeNodeAt_aux combine leafFn h 0 leaves (by simpa using hmatch)
+
+private theorem merkle_forgery_collision_target_aux {H : Type} (combine : Nat → Nat → H → H → H)
+    (leafFn : Nat → H) :
+    ∀ (h pos : Nat) (leaves : Fin (2 ^ h) → H) (idx : Nat) (hi : idx < 2 ^ h)
+      (leaf' : H) (path : List H),
+      (∀ i : Fin (2 ^ h), leaves i = leafFn (pos * 2 ^ h + i.val)) →
+      path.length = h →
+      leaf' ≠ leaves ⟨idx, hi⟩ →
+      merkleReconstructAux combine 1 (pos * 2 ^ h + idx) leaf' path = merkleNode combine h pos leaves →
+      ∃ level p L₁ R₁,
+        1 ≤ level ∧ level ≤ h ∧
+        (L₁ ≠ treeNodeAt combine leafFn (level - 1) (2 * p) ∨
+         R₁ ≠ treeNodeAt combine leafFn (level - 1) (2 * p + 1)) ∧
+        combine level p L₁ R₁ =
+          combine level p (treeNodeAt combine leafFn (level - 1) (2 * p))
+                          (treeNodeAt combine leafFn (level - 1) (2 * p + 1)) := by
+  intro h pos leaves idx hi leaf' path hmatch hlen hne hroot
+  induction h generalizing pos idx leaf' path with
+  | zero =>
+    have hp : path = [] := List.eq_nil_of_length_eq_zero hlen
+    subst hp
+    have hidx : idx = 0 := by omega
+    subst hidx
+    simp [merkleReconstructAux, merkleNode] at hroot
+    exact absurd hroot hne
+  | succ h ih =>
+    rcases list_split_last path hlen with ⟨pInit, topSib, hsplit, hpInit_len⟩
+    rw [hsplit, merkleReconstructAux_append, hpInit_len] at hroot
+    unfold merkleNode at hroot
+    dsimp only at hroot
+    have hmatchL : ∀ i : Fin (2 ^ h), leftHalf leaves i = leafFn ((2 * pos) * 2 ^ h + i.val) := by
+      intro i
+      have h1 := hmatch ⟨i.val, by have := i.isLt; rw [Nat.pow_succ]; omega⟩
+      have h2 : pos * 2 ^ (h + 1) + i.val = (2 * pos) * 2 ^ h + i.val := by rw [pos_mul_pow_succ]
+      simpa [leftHalf, h2] using h1
+    have hmatchR : ∀ i : Fin (2 ^ h), rightHalf leaves i = leafFn ((2 * pos + 1) * 2 ^ h + i.val) := by
+      intro i
+      have h1 := hmatch ⟨2 ^ h + i.val, by have := i.isLt; rw [Nat.pow_succ]; omega⟩
+      have h2 : pos * 2 ^ (h + 1) + (2 ^ h + i.val) = (2 * pos + 1) * 2 ^ h + i.val := by
+        rw [pos_mul_pow_succ, Nat.add_mul, Nat.one_mul]; omega
+      simpa [rightHalf, h2] using h1
+    have hEqL : merkleNode combine h (2 * pos) (leftHalf leaves) = treeNodeAt combine leafFn h (2 * pos) :=
+      merkleNode_eq_treeNodeAt_aux combine leafFn h (2 * pos) (leftHalf leaves) hmatchL
+    have hEqR : merkleNode combine h (2 * pos + 1) (rightHalf leaves) = treeNodeAt combine leafFn h (2 * pos + 1) :=
+      merkleNode_eq_treeNodeAt_aux combine leafFn h (2 * pos + 1) (rightHalf leaves) hmatchR
+    by_cases hleft : idx < 2 ^ h
+    · have hidx_eq : pos * 2 ^ (h + 1) + idx = (2 * pos) * 2 ^ h + idx := by rw [pos_mul_pow_succ]
+      rw [shift_right_left hleft] at hroot
+      have hlvl : 1 + h = h + 1 := by omega
+      simp only [merkleReconstructAux, Nat.mul_mod_right, ↓reduceIte,
+        Nat.mul_div_cancel_left _ (by decide : 0 < 2), hlvl] at hroot
+      let subForged := merkleReconstructAux combine 1 (pos * 2 ^ (h + 1) + idx) leaf' pInit
+      let subHonest := merkleNode combine h (2 * pos) (leftHalf leaves)
+      by_cases hsub : subForged = subHonest
+      · have hleaf_ne : leaf' ≠ leftHalf leaves ⟨idx, hleft⟩ := hne
+        have hsub' : merkleReconstructAux combine 1 ((2 * pos) * 2 ^ h + idx) leaf' pInit = subHonest := by
+          simpa [subForged, hidx_eq] using hsub
+        rcases ih (2 * pos) (leftHalf leaves) idx hleft leaf' pInit hmatchL hpInit_len hleaf_ne hsub' with
+          ⟨lvl, p, L₁, R₁, h1, h2, hdiff, hcol⟩
+        exact ⟨lvl, p, L₁, R₁, h1, by omega, hdiff, hcol⟩
+      · rw [hEqL, hEqR] at hroot
+        have hsub' : subForged ≠ treeNodeAt combine leafFn h (2 * pos) := by
+          simpa [subHonest, hEqL] using hsub
+        exact ⟨h + 1, pos, subForged, topSib, by omega, Nat.le_refl _, Or.inl hsub', hroot⟩
+    · have hrem : idx - 2 ^ h < 2 ^ h := by rw [Nat.pow_succ] at hi; omega
+      have hidx_eq : pos * 2 ^ (h + 1) + idx = (2 * pos + 1) * 2 ^ h + (idx - 2 ^ h) := by
+        rw [pos_mul_pow_succ, Nat.add_mul, Nat.one_mul]; omega
+      rw [shift_right_right hleft hi] at hroot
+      have hodd : ¬ (2 * pos + 1) % 2 = 0 := by omega
+      have hdiv : (2 * pos + 1) / 2 = pos := by omega
+      have hlvl : 1 + h = h + 1 := by omega
+      simp only [merkleReconstructAux, hodd, ↓reduceIte, hdiv, hlvl] at hroot
+      let subForged := merkleReconstructAux combine 1 (pos * 2 ^ (h + 1) + idx) leaf' pInit
+      let subHonest := merkleNode combine h (2 * pos + 1) (rightHalf leaves)
+      by_cases hsub : subForged = subHonest
+      · have hleaf_ne : leaf' ≠ rightHalf leaves ⟨idx - 2 ^ h, hrem⟩ := by
+          intro heq
+          apply hne
+          have hfin : (⟨idx, hi⟩ : Fin (2 ^ (h + 1))) = ⟨2 ^ h + (idx - 2 ^ h), by rw [Nat.pow_succ]; omega⟩ :=
+            Fin.ext (by dsimp; omega)
+          simpa [rightHalf, hfin] using heq
+        have hsub' : merkleReconstructAux combine 1 ((2 * pos + 1) * 2 ^ h + (idx - 2 ^ h)) leaf' pInit = subHonest := by
+          simpa [subForged, hidx_eq] using hsub
+        rcases ih (2 * pos + 1) (rightHalf leaves) (idx - 2 ^ h) hrem leaf' pInit hmatchR hpInit_len hleaf_ne hsub' with
+          ⟨lvl, p, L₁, R₁, h1, h2, hdiff, hcol⟩
+        exact ⟨lvl, p, L₁, R₁, h1, by omega, hdiff, hcol⟩
+      · rw [hEqL, hEqR] at hroot
+        have hsub' : subForged ≠ treeNodeAt combine leafFn h (2 * pos + 1) := by
+          simpa [subHonest, hEqR] using hsub
+        exact ⟨h + 1, pos, topSib, subForged, by omega, Nat.le_refl _, Or.inr hsub', hroot⟩
+
+/-- **Target-Bound Top-level Merkle Forgery Collision Theorem:**
+    extracts an explicit `(level, p)` and forged pair `(L₁, R₁)` distinct from the EXACT honest
+    child pair `(treeNodeAt ... (level - 1) (2 * p), treeNodeAt ... (level - 1) (2 * p + 1))`
+    that collides onto the exact honest node `treeNodeAt ... level p`. -/
+theorem merkle_forgery_collision {H : Type} (combine : Nat → Nat → H → H → H)
+    (leafFn : Nat → H) (h : Nat) (leaves : Fin (2 ^ h) → H)
+    (hmatch : ∀ i : Fin (2 ^ h), leaves i = leafFn i.val)
+    (idx : Nat) (hi : idx < 2 ^ h)
+    (leaf' : H) (path : List H) (hlen : path.length = h)
+    (hne : leaf' ≠ leaves ⟨idx, hi⟩)
+    (hroot : merkleReconstruct combine idx leaf' path = merkleNode combine h 0 leaves) :
+    ∃ level p L₁ R₁,
+      1 ≤ level ∧ level ≤ h ∧
+      (L₁ ≠ treeNodeAt combine leafFn (level - 1) (2 * p) ∨
+       R₁ ≠ treeNodeAt combine leafFn (level - 1) (2 * p + 1)) ∧
+      combine level p L₁ R₁ =
+        combine level p (treeNodeAt combine leafFn (level - 1) (2 * p))
+                        (treeNodeAt combine leafFn (level - 1) (2 * p + 1)) := by
+  apply merkle_forgery_collision_target_aux combine leafFn h 0 leaves idx hi leaf' path (by simpa using hmatch) hlen hne
+  simpa [merkleReconstruct] using hroot
+
+-- ---------------------------------------------------------------------------
+-- Single-Tree Bottom-Up Octopus Multi-Proofs (`SPEC.md §10.2`, U-PORS)
+-- ---------------------------------------------------------------------------
 
 /-- Sibling index `x ^^^ 1` in `Nat` arithmetic. -/
 def sibIdx (x : Nat) : Nat :=
@@ -434,7 +566,7 @@ theorem octopusClimbAux_extract {H : Type} (combine : Nat → Nat → H → H �
         rw [hadd] at hih
         exact hih
 
-/-- One-level constructive Octopus forgery collision extractor. -/
+/-- One-level target-bound constructive Octopus forgery collision extractor. -/
 private theorem octopusClimbLevel_collision_len {H : Type} (combine : Nat → Nat → H → H → H) (leafFn : Nat → H)
     (lvl : Nat) :
     ∀ (n : Nat) (cur : List (Nat × H)), cur.length ≤ n →
@@ -442,9 +574,12 @@ private theorem octopusClimbLevel_collision_len {H : Type} (combine : Nat → Na
         octopusClimbLevel (combine (lvl + 1)) cur sibs = some (ps, remSibs) →
         (∀ pv ∈ ps, pv.2 = treeNodeAt combine leafFn (lvl + 1) pv.1) →
         (∀ xv ∈ cur, xv.2 = treeNodeAt combine leafFn lvl xv.1) ∨
-        ∃ p L₁ R₁ L₂ R₂,
-          (L₁ ≠ L₂ ∨ R₁ ≠ R₂) ∧
-          combine (lvl + 1) p L₁ R₁ = combine (lvl + 1) p L₂ R₂ := by
+        ∃ p L₁ R₁,
+          (L₁ ≠ treeNodeAt combine leafFn lvl (2 * p) ∨
+           R₁ ≠ treeNodeAt combine leafFn lvl (2 * p + 1)) ∧
+          combine (lvl + 1) p L₁ R₁ =
+            combine (lvl + 1) p (treeNodeAt combine leafFn lvl (2 * p))
+                                (treeNodeAt combine leafFn lvl (2 * p + 1)) := by
   intro n
   induction n with
   | zero =>
@@ -475,11 +610,13 @@ private theorem octopusClimbLevel_collision_len {H : Type} (combine : Nat → Na
           · right
             by_cases heven : x % 2 = 0
             · rw [ite_eq_left heven] at hp
-              rw [← pair_combine_even combine leafFn lvl x heven] at hp
-              exact ⟨x / 2, vx, sib, treeNodeAt combine leafFn lvl x, treeNodeAt combine leafFn lvl (x + 1), Or.inl hx, hp⟩
+              have h2x : 2 * (x / 2) = x := by omega
+              rw [← h2x] at hx
+              exact ⟨x / 2, vx, sib, Or.inl hx, hp⟩
             · rw [ite_eq_right heven] at hp
-              rw [← pair_combine_odd combine leafFn lvl x heven] at hp
-              exact ⟨x / 2, sib, vx, treeNodeAt combine leafFn lvl (x - 1), treeNodeAt combine leafFn lvl x, Or.inr hx, hp⟩
+              have h2x1 : 2 * (x / 2) + 1 = x := by omega
+              rw [← h2x1] at hx
+              exact ⟨x / 2, sib, vx, Or.inr hx, hp⟩
       | cons head2 ys =>
         rcases head2 with ⟨y, vy⟩
         simp only [octopusClimbLevel] at hclimb
@@ -506,12 +643,14 @@ private theorem octopusClimbLevel_collision_len {H : Type} (combine : Nat → Na
                 · exact hok xv hm
               · exact Or.inr hcol
             · right
-              rw [← pair_combine_even combine leafFn lvl x hpair.1] at hp0
-              have hdiff : vx ≠ treeNodeAt combine leafFn lvl x ∨ vy ≠ treeNodeAt combine leafFn lvl (x + 1) := by
+              have h2x : 2 * (x / 2) = x := by omega
+              have hdiff : vx ≠ treeNodeAt combine leafFn lvl (2 * (x / 2)) ∨
+                           vy ≠ treeNodeAt combine leafFn lvl (2 * (x / 2) + 1) := by
+                rw [h2x]
                 by_cases hx : vx = treeNodeAt combine leafFn lvl x
                 · right; intro hy; apply hxy; exact ⟨hx, by rw [hpair.2]; exact hy⟩
                 · exact Or.inl hx
-              exact ⟨x / 2, vx, vy, treeNodeAt combine leafFn lvl x, treeNodeAt combine leafFn lvl (x + 1), hdiff, hp0⟩
+              exact ⟨x / 2, vx, vy, hdiff, hp0⟩
         · rw [ite_eq_right hpair] at hclimb
           cases sibs with
           | nil => cases hclimb
@@ -539,26 +678,33 @@ private theorem octopusClimbLevel_collision_len {H : Type} (combine : Nat → Na
               · right
                 by_cases heven : x % 2 = 0
                 · rw [ite_eq_left heven] at hp0
-                  rw [← pair_combine_even combine leafFn lvl x heven] at hp0
-                  exact ⟨x / 2, vx, sib, treeNodeAt combine leafFn lvl x, treeNodeAt combine leafFn lvl (x + 1), Or.inl hx, hp0⟩
+                  have h2x : 2 * (x / 2) = x := by omega
+                  rw [← h2x] at hx
+                  exact ⟨x / 2, vx, sib, Or.inl hx, hp0⟩
                 · rw [ite_eq_right heven] at hp0
-                  rw [← pair_combine_odd combine leafFn lvl x heven] at hp0
-                  exact ⟨x / 2, sib, vx, treeNodeAt combine leafFn lvl (x - 1), treeNodeAt combine leafFn lvl x, Or.inr hx, hp0⟩
+                  have h2x1 : 2 * (x / 2) + 1 = x := by omega
+                  rw [← h2x1] at hx
+                  exact ⟨x / 2, sib, vx, Or.inr hx, hp0⟩
 
-/-- **Constructive Multi-Level Octopus Forgery Collision Extractor (`SPEC.md §10.2`):**
+/-- **Target-Bound Constructive Multi-Level Octopus Forgery Collision Extractor (`SPEC.md §10.2`):**
     If climbing `rem` levels from `cur` yields honest nodes at level `lvl + rem`, then EITHER
-    every input `(x, vx) ∈ cur` matches the honest level-`lvl` node `treeNodeAt combine leafFn lvl x`,
-    OR there is an explicit internal `NODE` 2nd-preimage collision at some `level ∈ [lvl + 1, lvl + rem]`! -/
+    every input `(x, vx) ∈ cur` matches `treeNodeAt combine leafFn lvl x`,
+    OR there is an explicit `level ∈ [lvl + 1, lvl + rem]` and forged child pair `(L₁, R₁)`
+    distinct from the EXACT honest child pair `(treeNodeAt ... (level - 1) (2 * p), treeNodeAt ... (level - 1) (2 * p + 1))`
+    colliding onto `treeNodeAt ... level p`! -/
 theorem octopus_forgery_collision_aux {H : Type} (combine : Nat → Nat → H → H → H) (leafFn : Nat → H)
     (lvl rem : Nat) :
     ∀ (cur : List (Nat × H)) (sibs : List H) (top : List (Nat × H)) (remSibs : List H),
       octopusClimbAux combine lvl rem cur sibs = some (top, remSibs) →
       (∀ pv ∈ top, pv.2 = treeNodeAt combine leafFn (lvl + rem) pv.1) →
       (∀ xv ∈ cur, xv.2 = treeNodeAt combine leafFn lvl xv.1) ∨
-      ∃ level p L₁ R₁ L₂ R₂,
+      ∃ level p L₁ R₁,
         lvl + 1 ≤ level ∧ level ≤ lvl + rem ∧
-        (L₁ ≠ L₂ ∨ R₁ ≠ R₂) ∧
-        combine level p L₁ R₁ = combine level p L₂ R₂ := by
+        (L₁ ≠ treeNodeAt combine leafFn (level - 1) (2 * p) ∨
+         R₁ ≠ treeNodeAt combine leafFn (level - 1) (2 * p + 1)) ∧
+        combine level p L₁ R₁ =
+          combine level p (treeNodeAt combine leafFn (level - 1) (2 * p))
+                          (treeNodeAt combine leafFn (level - 1) (2 * p + 1)) := by
   induction rem generalizing lvl with
   | zero =>
     intro cur sibs top remSibs hclimb hall
@@ -575,24 +721,25 @@ theorem octopus_forgery_collision_aux {H : Type} (combine : Nat → Nat → H �
       rw [h1] at hclimb
       have hadd : lvl + 1 + rem = lvl + (rem + 1) := by omega
       have hmid := ih (lvl + 1) ps rSibs top remSibs hclimb (by rw [hadd]; exact hall)
-      rcases hmid with hps_ok | ⟨level, p, L₁, R₁, L₂, R₂, h1l, h2l, hdiff, hcol⟩
+      rcases hmid with hps_ok | ⟨level, p, L₁, R₁, h1l, h2l, hdiff, hcol⟩
       · have hcur := octopusClimbLevel_collision_len combine leafFn lvl cur.length cur (Nat.le_refl _) sibs ps rSibs h1 hps_ok
-        rcases hcur with hok | ⟨p, L₁, R₁, L₂, R₂, hdiff, hcol⟩
+        rcases hcur with hok | ⟨p, L₁, R₁, hdiff, hcol⟩
         · exact Or.inl hok
-        · exact Or.inr ⟨lvl + 1, p, L₁, R₁, L₂, R₂, Nat.le_refl _, by omega, hdiff, hcol⟩
-      · exact Or.inr ⟨level, p, L₁, R₁, L₂, R₂, by omega, by omega, hdiff, hcol⟩
+        · exact Or.inr ⟨lvl + 1, p, L₁, R₁, Nat.le_refl _, by omega, hdiff, hcol⟩
+      · exact Or.inr ⟨level, p, L₁, R₁, by omega, by omega, hdiff, hcol⟩
 
-/-- **Top-Level Octopus Forgery Collision Theorem (`SPEC.md §10.2`):**
-    If an Octopus multi-proof reconstructs to the honest root `treeNodeAt combine leafFn h 0`,
-    then EITHER every opened leaf `(idx, v)` matches `leafFn idx`, OR an explicit `NODE` collision exists! -/
+/-- **Target-Bound Top-Level Octopus Forgery Collision Theorem (`SPEC.md §10.2`).** -/
 theorem octopus_forgery_collision {H : Type} (combine : Nat → Nat → H → H → H) (leafFn : Nat → H)
     (h : Nat) (cur : List (Nat × H)) (sibs : List H) (remSibs : List H)
     (hclimb : octopusClimbAux combine 0 h cur sibs = some ([(0, treeNodeAt combine leafFn h 0)], remSibs)) :
     (∀ xv ∈ cur, xv.2 = leafFn xv.1) ∨
-    ∃ level p L₁ R₁ L₂ R₂,
+    ∃ level p L₁ R₁,
       1 ≤ level ∧ level ≤ h ∧
-      (L₁ ≠ L₂ ∨ R₁ ≠ R₂) ∧
-      combine level p L₁ R₁ = combine level p L₂ R₂ := by
+      (L₁ ≠ treeNodeAt combine leafFn (level - 1) (2 * p) ∨
+       R₁ ≠ treeNodeAt combine leafFn (level - 1) (2 * p + 1)) ∧
+      combine level p L₁ R₁ =
+        combine level p (treeNodeAt combine leafFn (level - 1) (2 * p))
+                        (treeNodeAt combine leafFn (level - 1) (2 * p + 1)) := by
   have hres := octopus_forgery_collision_aux combine leafFn 0 h cur sibs
     [(0, treeNodeAt combine leafFn h 0)] remSibs hclimb
     (by intro pv hpv; simp only [List.mem_singleton] at hpv; subst hpv; simp)
