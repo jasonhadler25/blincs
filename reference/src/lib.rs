@@ -1,4 +1,4 @@
-//! Teaching-clarity reference implementation of **`BLINCS-128-A2`** (`3,292` bytes).
+//! Teaching-clarity reference implementation of **`BLINCS-48-X`** (`3,990` bytes, `q = 2^48`).
 //!
 //! Written for legibility and 1-to-1 correspondence with [`SPEC.md`](../../SPEC.md).
 //! For the production implementation with super-wave SIMD batching, `#![no_std]` verifier,
@@ -12,43 +12,44 @@
 use blake3_servil_core::Mode;
 use blake3_servil_core::convenience::{Hasher, hash_with};
 use blake3_servil_core::throughput::{Batch, Block, Packed, Prepared, TreeHasher};
-use std::sync::LazyLock;
 
 // ---------------------------------------------------------------------------
 // 1. Suite parameters (SPEC.md §3)
 // ---------------------------------------------------------------------------
 
 /// Permanent suite identifier.
-pub const SUITE_NAME: &str = "BLINCS-128-A2";
+pub const SUITE_NAME: &str = "BLINCS-48-X";
 /// Byte length of truncated nodes, chain values, salt `e`, and randomizer `R`.
 pub const N: usize = 16;
-/// Number of hypertree layers (`d = 4`: three height-7 lower layers + one height-12 top layer).
-pub const LAYERS: usize = 4;
+/// Number of hypertree layers (`d = 6`: five height-7 lower layers + one height-13 top layer).
+pub const LAYERS: usize = 6;
 /// Height of each lower hypertree layer (`2^7 = 128` leaves).
 pub const LOW_HEIGHT: usize = 7;
 /// Leaves per lower hypertree tree (`128`).
 pub const LOW_LEAVES: usize = 1 << LOW_HEIGHT;
-/// Height of the cached top hypertree layer (`2^{12} = 4,096` leaves).
-pub const TOP_HEIGHT: usize = 12;
-/// Leaves in the top hypertree tree (`4,096`).
+/// Height of the top hypertree layer (`2^{13} = 8,192` leaves).
+pub const TOP_HEIGHT: usize = 13;
+/// Leaves in the top hypertree tree (`8,192`).
 pub const TOP_LEAVES: usize = 1 << TOP_HEIGHT;
-/// Total hypertree height (`3 * 7 + 12 = 33`).
-pub const HYPER_BITS: usize = 3 * LOW_HEIGHT + TOP_HEIGHT;
+/// Total hypertree height (`5 * 7 + 13 = 48`).
+pub const HYPER_BITS: usize = 5 * LOW_HEIGHT + TOP_HEIGHT;
 
-/// `S-WOTS+Z` chains per hypertree leaf (`n = 24`).
-pub const WOTS_N: usize = 24;
-/// `S-WOTS+Z` chain cardinality (`w = 40`, digits in `0..=39`).
-pub const WOTS_W: usize = 40;
-/// Maximum `S-WOTS+Z` chain steps (`w - 1 = 39`).
+/// `WOTS+C` chains per hypertree leaf (`n = 21`).
+pub const WOTS_N: usize = 21;
+/// `WOTS+C` chain cardinality (`w = 60`, 6-bit digits in `0..=59`).
+pub const WOTS_W: usize = 60;
+/// Maximum `WOTS+C` chain steps (`w - 1 = 59`).
 pub const WOTS_STEPS: usize = WOTS_W - 1;
-/// Middle Sperner slice sum (`24 * 39 / 2 = 468`; exact constant `468` verify steps/layer).
-pub const WOTS_SUM: usize = 468;
-/// Byte length of the deterministic `u16` `S-WOTS+Z` layer counter (`z = 8` zero bits).
-pub const WOTS_CTR_LEN: usize = 2;
+/// Constant upper-half digit sum (`2^{128} / |L_679(21, 60)| = 4,086.9` mean trials; exact `560` verify steps/layer).
+pub const WOTS_SUM: usize = 679;
+/// Required LSB-first zero bits on `ONE_TIME_MSG` (`2 + 21 * 6 = 128` bits exact).
+pub const WOTS_Z: usize = 2;
+/// Byte length of the deterministic `u24` LE `WOTS+C` layer counter.
+pub const WOTS_CTR_LEN: usize = 3;
 
-/// Height of the single `U-PORS` binary Merkle tree (`2^{10} = 1,024` leaves).
-pub const UPORS_HEIGHT: usize = 10;
-/// Leaves in the `U-PORS` tree (`1,024`).
+/// Height of the single `U-PORS` binary Merkle tree (`2^{11} = 2,048` leaves).
+pub const UPORS_HEIGHT: usize = 11;
+/// Leaves in the `U-PORS` tree (`2,048`).
 pub const UPORS_LEAVES: usize = 1 << UPORS_HEIGHT;
 /// Equal-length chains per `U-PORS` leaf (`n = 3`; `16 + 3 * 16 = 64` B = 1 BLAKE3 block).
 pub const UPORS_N: usize = 3;
@@ -60,34 +61,34 @@ pub const UPORS_STEPS: usize = UPORS_W - 1;
 pub const UPORS_SUM: usize = 42;
 /// Cardinality of the full upper slice `L_42(3, 24)` (`376` codewords).
 pub const UPORS_C: usize = 376;
-/// Number of distinct `U-PORS` leaves opened per imprint (`k = 10`).
-pub const UPORS_K: usize = 10;
-/// Verifier-enforced maximum Octopus authentication siblings (`44`).
-pub const UPORS_M_MAX: usize = 44;
+/// Number of distinct `U-PORS` leaves opened per imprint (`k = 9`).
+pub const UPORS_K: usize = 9;
+/// Verifier-enforced maximum Octopus authentication siblings (`45`).
+pub const UPORS_M_MAX: usize = 45;
 /// Byte length of the `u32` `U-PORS` selection counter (`4`).
 pub const UPORS_CTR_LEN: usize = 4;
-/// Maximum `10`-bit chunks scanned inside one `FEW_SELECT` digest (`22 * 10 + 33 = 253 <= 256`).
-pub const UPORS_SELECT_MAX_DRAWS: usize = 22;
-/// Tweak layer byte `0x80` separating `U-PORS` from hypertree layers `0..4`.
+/// Maximum `11`-bit chunks scanned inside one `FEW_SELECT` digest (`18 * 11 + 48 = 246 <= 256`).
+pub const UPORS_SELECT_MAX_DRAWS: usize = 18;
+/// Tweak layer byte `0x80` separating `U-PORS` from hypertree layers `0..6`.
 pub const UPORS_LAYER: u8 = 0x80;
 /// Maximum length of the framed application context in bytes.
 pub const MAX_CONTEXT_LEN: usize = 255;
 
-/// Encoded byte length of the `U-PORS` section (`4 + (30 + 44) * 16 = 1,188`).
+/// Encoded byte length of the `U-PORS` section (`4 + (27 + 45) * 16 = 1,156`).
 pub const UPORS_LEN: usize = UPORS_CTR_LEN + (UPORS_K * UPORS_N + UPORS_M_MAX) * N;
-/// Encoded byte length of one lower hypertree layer (`2 + (24 + 7) * 16 = 498`).
+/// Encoded byte length of one lower hypertree layer (`3 + (21 + 7) * 16 = 451`).
 pub const LOW_LAYER_LEN: usize = WOTS_CTR_LEN + (WOTS_N + LOW_HEIGHT) * N;
-/// Encoded byte length of the top hypertree layer (`2 + (24 + 12) * 16 = 578`).
+/// Encoded byte length of the top hypertree layer (`3 + (21 + 13) * 16 = 547`).
 pub const TOP_LAYER_LEN: usize = WOTS_CTR_LEN + (WOTS_N + TOP_HEIGHT) * N;
-/// Encoded byte length of a complete `BLINCS-128-A2` imprint (`3,292`).
-pub const IMPRINT_LEN: usize = 2 * N + UPORS_LEN + 3 * LOW_LAYER_LEN + TOP_LAYER_LEN;
+/// Encoded byte length of a complete `BLINCS-48-X` imprint (`3,990`).
+pub const IMPRINT_LEN: usize = 2 * N + UPORS_LEN + 5 * LOW_LAYER_LEN + TOP_LAYER_LEN;
 
 const _: () = {
-    assert!(HYPER_BITS == 33);
-    assert!(WOTS_SUM * 2 == WOTS_N * WOTS_STEPS);
+    assert!(HYPER_BITS == 48);
+    assert!(UPORS_SELECT_MAX_DRAWS * UPORS_HEIGHT + HYPER_BITS == 246);
     assert!(16 + UPORS_N * N == 64);
-    assert!(UPORS_LEN == 1188 && LOW_LAYER_LEN == 498 && TOP_LAYER_LEN == 578);
-    assert!(IMPRINT_LEN == 3292);
+    assert!(UPORS_LEN == 1156 && LOW_LAYER_LEN == 451 && TOP_LAYER_LEN == 547);
+    assert!(IMPRINT_LEN == 3990);
 };
 
 // ---------------------------------------------------------------------------
@@ -95,17 +96,17 @@ const _: () = {
 // ---------------------------------------------------------------------------
 
 /// Secret-values KDF context (`K_sec`).
-pub const CTX_SECRET_VALUES: &str = "BLINCS-128-A2 2026-11-26 secret values";
+pub const CTX_SECRET_VALUES: &str = "BLINCS-48-X 2026-11-26 secret values";
 /// Content-salt KDF context (`K_salt`).
-pub const CTX_CONTENT_SALT: &str = "BLINCS-128-A2 2026-11-26 content salt";
+pub const CTX_CONTENT_SALT: &str = "BLINCS-48-X 2026-11-26 content salt";
 /// Randomizer KDF context (`K_R`).
-pub const CTX_RANDOMIZER: &str = "BLINCS-128-A2 2026-11-26 randomizer";
+pub const CTX_RANDOMIZER: &str = "BLINCS-48-X 2026-11-26 randomizer";
 /// Public-seed KDF context (`pk_seed`).
-pub const CTX_PUBLIC_SEED: &str = "BLINCS-128-A2 2026-11-26 public seed";
+pub const CTX_PUBLIC_SEED: &str = "BLINCS-48-X 2026-11-26 public seed";
 /// Public-hash KDF context (`K_pub`).
-pub const CTX_PUBLIC_HASH: &str = "BLINCS-128-A2 2026-11-26 public hash";
+pub const CTX_PUBLIC_HASH: &str = "BLINCS-48-X 2026-11-26 public hash";
 /// Content-key KDF context (`K_content`).
-pub const CTX_CONTENT: &str = "BLINCS-128-A2 2026-11-26 content";
+pub const CTX_CONTENT: &str = "BLINCS-48-X 2026-11-26 content";
 
 /// Tweak kind for secret chain start values (`K_sec`).
 pub const KIND_CHAIN_SECRET: u8 = 1;
@@ -115,7 +116,7 @@ pub const KIND_CHAIN: u8 = 2;
 pub const KIND_ONE_TIME_KEY: u8 = 3;
 /// Tweak kind for Merkle internal node compression (`K_pub`).
 pub const KIND_NODE: u8 = 4;
-/// Tweak kind for `S-WOTS+Z` counter-grinding (`K_pub`).
+/// Tweak kind for `WOTS+C` counter-grinding (`K_pub`).
 pub const KIND_ONE_TIME_MSG: u8 = 5;
 /// Tweak kind for message digest seed `D_seed` (`K_pub`).
 pub const KIND_MESSAGE: u8 = 6;
@@ -175,11 +176,11 @@ fn frame_context(ctx: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Zero-ROM coding primitives: hexagon & Sperner unranking (SPEC.md §§10–11)
+// 3. Zero-table coding primitives: hexagon unranking & WOTS+C 6-bit decoding
 // ---------------------------------------------------------------------------
 
 /// Map `idx in 0..376` bijectively to `(a, b, c)` in `{0..23}^3` with `a + b + c = 42`
-/// (`SPEC.md §10.1`, zero ROM lookup tables).
+/// (`SPEC.md §10.1`, zero static lookup tables).
 pub fn hex_unrank(mut idx: usize) -> [usize; UPORS_N] {
     assert!(idx < UPORS_C, "hex_unrank index out of range");
     for a in 0..=UPORS_STEPS {
@@ -202,52 +203,25 @@ pub fn hex_unrank(mut idx: usize) -> [usize; UPORS_N] {
     unreachable!("hex_unrank exhausted")
 }
 
-static SPERNER_DP: LazyLock<Vec<[u128; WOTS_SUM + 1]>> = LazyLock::new(|| {
-    let mut rows = vec![[0u128; WOTS_SUM + 1]; WOTS_N + 1];
-    rows[0][0] = 1;
-    for k in 1..=WOTS_N {
-        let mut acc = 0u128;
-        for s in 0..=WOTS_SUM {
-            acc += rows[k - 1][s];
-            if s >= WOTS_W {
-                acc -= rows[k - 1][s - WOTS_W];
-            }
-            rows[k][s] = acc;
-        }
+/// Decode `WOTS+C(n = 21, w = 60, z = 2, S = 679)` directly from `H_l[0..16]` (`SPEC.md §11.1`):
+/// requires `(lo & 3) == 0`, all 21 packed 6-bit fields `d_i < 60`, and `sum(d_i) == 679`.
+/// Zero division, zero Sperner DP, zero static lookup tables.
+pub fn decode_wots_c(digest: &[u8; 32]) -> Option<[usize; WOTS_N]> {
+    let lo = u128::from_le_bytes(digest[..16].try_into().unwrap());
+    if (lo & 3) != 0 {
+        return None;
     }
-    rows
-});
-
-/// Exact cardinality `|L_468(24, 40)|` (`> 2^120`, `SPEC.md §11.1`).
-pub fn sperner_slice_cardinality() -> u128 {
-    SPERNER_DP[WOTS_N][WOTS_SUM]
-}
-
-/// Map a 120-bit rank (`< 2^120`) injectively to its lexicographic tuple in `L_468(24, 40)`
-/// (`SPEC.md §11.1`).
-pub fn sperner_unrank(mut rank: u128) -> [usize; WOTS_N] {
-    assert!(
-        rank < sperner_slice_cardinality(),
-        "Sperner rank out of range"
-    );
-    let dp = &*SPERNER_DP;
-    let mut out = [0usize; WOTS_N];
-    let mut rem = WOTS_SUM;
-    for (i, slot) in out.iter_mut().enumerate() {
-        let k_rem = WOTS_N - 1 - i;
-        let d_hi = rem.min(WOTS_STEPS);
-        for d in 0..=d_hi {
-            let cnt = dp[k_rem][rem - d];
-            if rank < cnt {
-                *slot = d;
-                rem -= d;
-                break;
-            }
-            rank -= cnt;
+    let mut digits = [0usize; WOTS_N];
+    let mut sum = 0usize;
+    for (i, slot) in digits.iter_mut().enumerate() {
+        let d = usize::try_from((lo >> (WOTS_Z + 6 * i)) & 63).unwrap();
+        if d >= WOTS_W {
+            return None;
         }
+        *slot = d;
+        sum += d;
     }
-    assert!(rem == 0 && rank == 0);
-    out
+    if sum == WOTS_SUM { Some(digits) } else { None }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +232,7 @@ pub fn sperner_unrank(mut rank: u128) -> [usize; WOTS_N] {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignetId(pub [u8; 32]);
 
-/// Private signing capability derived from a 32-byte seed, caching the `128 KiB` top height-12 tree.
+/// Private signing capability derived from a 32-byte seed, caching the `256 KiB` top height-13 tree.
 pub struct Signet {
     k_sec: [u8; 32],
     k_salt: [u8; 32],
@@ -270,7 +244,7 @@ pub struct Signet {
 }
 
 impl Signet {
-    /// Derive a `Signet` and its cached `128 KiB` height-12 top tree from a 32-byte seed (`SPEC.md §6`).
+    /// Derive a `Signet` and its cached `256 KiB` height-13 top tree from a 32-byte seed (`SPEC.md §6`).
     pub fn from_seed(seed: &[u8; 32]) -> Self {
         blake3_servil_core::initialize();
         let k_sec = derive_key(CTX_SECRET_VALUES, seed);
@@ -279,7 +253,7 @@ impl Signet {
         let pk_seed = first_n(&derive_key(CTX_PUBLIC_SEED, seed));
         let k_pub = derive_key(CTX_PUBLIC_HASH, &pk_seed);
 
-        let top_tree = build_wots_merkle_heap(&k_sec, &k_pub, 3, 0, TOP_HEIGHT);
+        let top_tree = build_wots_merkle_heap(&k_sec, &k_pub, 5, 0, TOP_HEIGHT);
         let mut id_bytes = [0u8; 32];
         id_bytes[..N].copy_from_slice(&pk_seed);
         id_bytes[N..].copy_from_slice(&top_tree[1]);
@@ -300,7 +274,7 @@ impl Signet {
         self.id
     }
 
-    /// Create a deterministic `3,292`-byte `Imprint` given a 32-byte random draw `draw`,
+    /// Create a deterministic `3,990`-byte `Imprint` given a 32-byte random draw `draw`,
     /// bounded application context `ctx` (`0..=255` B), and arbitrary message `msg`.
     pub fn imprint_deterministic(
         &self,
@@ -323,7 +297,8 @@ impl Signet {
 
         let d_seed = compute_d_seed(&self.k_pub, &r, &self.top_tree[1], &short, &fctx);
         let sel = grind_upors_selection(&self.k_pub, &d_seed);
-        let codewords = extract_upors_codewords(&self.k_pub, &d_seed, sel.ctr);
+        let codewords =
+            extract_upors_codewords(&self.k_pub, &sel.h_sel).expect("FEW_CODE block_idx overflow");
 
         let mut out = [0u8; IMPRINT_LEN];
         out[..N].copy_from_slice(&e);
@@ -337,15 +312,18 @@ impl Signet {
         let mut off = 2 * N + UPORS_LEN;
         for layer in 0..LAYERS {
             let layer_u8 = u8::try_from(layer).unwrap();
-            let h_l = if layer == 3 { TOP_HEIGHT } else { LOW_HEIGHT };
+            let h_l = if layer == LAYERS - 1 {
+                TOP_HEIGHT
+            } else {
+                LOW_HEIGHT
+            };
             let leaf = u16::try_from(addr & ((1u64 << h_l) - 1)).unwrap();
             let tree = addr >> h_l;
             addr = tree;
 
-            let (ctr_l, rank) = grind_wots_msg(&self.k_pub, layer_u8, tree, leaf, &node);
-            let digits = sperner_unrank(rank);
+            let (ctr_l, digits) = grind_wots_msg(&self.k_pub, layer_u8, tree, leaf, &node);
 
-            out[off..off + WOTS_CTR_LEN].copy_from_slice(&ctr_l.to_le_bytes());
+            out[off..off + WOTS_CTR_LEN].copy_from_slice(&ctr_l.to_le_bytes()[..WOTS_CTR_LEN]);
             off += WOTS_CTR_LEN;
 
             for (c, &d) in digits.iter().enumerate() {
@@ -369,7 +347,7 @@ impl Signet {
                 off += N;
             }
 
-            let (layer_root, auth) = if layer == 3 {
+            let (layer_root, auth) = if layer == LAYERS - 1 {
                 (
                     self.top_tree[1],
                     extract_auth(&self.top_tree, TOP_HEIGHT, usize::from(leaf)),
@@ -391,7 +369,7 @@ impl Signet {
 }
 
 impl SignetId {
-    /// Verify a `3,292`-byte `BLINCS-128-A2` imprint (`SPEC.md §§7–11`).
+    /// Verify a `3,990`-byte `BLINCS-48-X` imprint (`SPEC.md §§7–11`).
     pub fn verify(&self, ctx: &[u8], msg: &[u8], imprint: &[u8; IMPRINT_LEN]) -> bool {
         if ctx.len() > MAX_CONTEXT_LEN {
             return false;
@@ -417,7 +395,9 @@ impl SignetId {
         let Some(sel) = verify_upors_selection(&k_pub, &d_seed, ctr_ft) else {
             return false;
         };
-        let codewords = extract_upors_codewords(&k_pub, &d_seed, ctr_ft);
+        let Some(codewords) = extract_upors_codewords(&k_pub, &sel.h_sel) else {
+            return false;
+        };
         let Some(mut node) = upors_verify(&k_pub, &sel, &codewords, upors_slice) else {
             return false;
         };
@@ -426,17 +406,20 @@ impl SignetId {
         let mut off = 2 * N + UPORS_LEN;
         for layer in 0..LAYERS {
             let layer_u8 = u8::try_from(layer).unwrap();
-            let h_l = if layer == 3 { TOP_HEIGHT } else { LOW_HEIGHT };
+            let h_l = if layer == LAYERS - 1 {
+                TOP_HEIGHT
+            } else {
+                LOW_HEIGHT
+            };
             let leaf = u16::try_from(addr & ((1u64 << h_l) - 1)).unwrap();
             let tree = addr >> h_l;
             addr = tree;
 
-            let ctr_l = u16::from_le_bytes(imprint[off..off + WOTS_CTR_LEN].try_into().unwrap());
+            let ctr_l = u32::from_le_bytes([imprint[off], imprint[off + 1], imprint[off + 2], 0]);
             off += WOTS_CTR_LEN;
-            let Some(rank) = verify_wots_msg(&k_pub, layer_u8, tree, leaf, &node, ctr_l) else {
+            let Some(digits) = verify_wots_msg(&k_pub, layer_u8, tree, leaf, &node, ctr_l) else {
                 return false;
             };
-            let digits = sperner_unrank(rank);
 
             let mut pk_data = [0u8; WOTS_N * N];
             for (c, &d) in digits.iter().enumerate() {
@@ -521,6 +504,7 @@ fn compute_d_seed(
 
 struct UporsSel {
     ctr: u32,
+    h_sel: [u8; 32],
     leaf_addr: u64,
     leaves: [u16; UPORS_K],
     sibs: usize,
@@ -576,26 +560,61 @@ fn parse_select_digest(d: &[u8; 32]) -> Option<(u64, [u16; UPORS_K], usize)> {
     Some((leaf_addr, leaves, sibs))
 }
 
+#[inline]
+fn parse_select_fast(d: &[u8; 32]) -> Option<(u64, [u16; UPORS_K], usize)> {
+    let w0 = u64::from_le_bytes(d[0..8].try_into().unwrap());
+    let w1 = u64::from_le_bytes(d[8..16].try_into().unwrap());
+    let m5 = (1u64 << ((w0 >> 5) & 63))
+        | (1u64 << ((w0 >> 16) & 63))
+        | (1u64 << ((w0 >> 27) & 63))
+        | (1u64 << ((w0 >> 38) & 63))
+        | (1u64 << ((w0 >> 49) & 63))
+        | (1u64 << (((w0 >> 60) | (w1 << 4)) & 63))
+        | (1u64 << ((w1 >> 7) & 63))
+        | (1u64 << ((w1 >> 18) & 63))
+        | (1u64 << ((w1 >> 29) & 63));
+    let n5 = m5.count_ones();
+    if n5 == 9 {
+        return None;
+    }
+    let m6 = m5 | (m5 >> 1);
+    let m7 = m6 | (m6 >> 2);
+    let m8 = m7 | (m7 >> 4);
+    let m9 = m8 | (m8 >> 8);
+    let m10 = m9 | (m9 >> 16);
+    let lb = 5 * n5
+        + (m6 & 0x5555_5555_5555_5555).count_ones()
+        + (m7 & 0x1111_1111_1111_1111).count_ones()
+        + (m8 & 0x0101_0101_0101_0101).count_ones()
+        + (m9 & 0x0001_0001_0001_0001).count_ones()
+        + (m10 & 0x0000_0001_0000_0001).count_ones();
+    if lb > 52 {
+        return None;
+    }
+    parse_select_digest(d)
+}
+
 fn grind_upors_selection(k_pub: &[u8; 32], d_seed: &[u8; 32]) -> UporsSel {
     let mut tmpl = [0u8; 52];
     tmpl[..16].copy_from_slice(&tweak(KIND_FEW_SELECT, UPORS_LAYER, 0, 0, 0, 0));
     tmpl[16..48].copy_from_slice(d_seed);
     let th = TreeHasher::new(Mode::Keyed(k_pub));
-    let mut out = [[0u8; 32]; 256];
+    let mut out = vec![[0u8; 32]; 1024];
     let mut start = 0u32;
     loop {
         th.hash_counter_range(&tmpl, 12, start, &mut out);
         for (i, d) in out.iter().enumerate() {
-            if let Some((leaf_addr, leaves, sibs)) = parse_select_digest(d) {
+            if let Some((leaf_addr, leaves, sibs)) = parse_select_fast(d) {
                 return UporsSel {
                     ctr: start + u32::try_from(i).unwrap(),
+                    h_sel: *d,
                     leaf_addr,
                     leaves,
                     sibs,
                 };
             }
         }
-        start = start.checked_add(256).expect("ctr_ft exhausted");
+        start = start.checked_add(1024).expect("ctr_ft exhausted");
     }
 }
 
@@ -608,6 +627,7 @@ fn verify_upors_selection(k_pub: &[u8; 32], d_seed: &[u8; 32], ctr: u32) -> Opti
     let (leaf_addr, leaves, sibs) = parse_select_digest(&d)?;
     Some(UporsSel {
         ctr,
+        h_sel: d,
         leaf_addr,
         leaves,
         sibs,
@@ -616,16 +636,13 @@ fn verify_upors_selection(k_pub: &[u8; 32], d_seed: &[u8; 32], ctr: u32) -> Opti
 
 fn extract_upors_codewords(
     k_pub: &[u8; 32],
-    d_seed: &[u8; 32],
-    ctr: u32,
-) -> [[usize; UPORS_N]; UPORS_K] {
+    h_sel: &[u8; 32],
+) -> Option<[[usize; UPORS_N]; UPORS_K]> {
     let mut out = [[0usize; UPORS_N]; UPORS_K];
     let mut got = 0usize;
-    let mut block_idx = 0u16;
-    let mut msg = [0u8; 52];
-    msg[16..48].copy_from_slice(d_seed);
-    msg[48..52].copy_from_slice(&ctr.to_le_bytes());
-    while got < UPORS_K {
+    let mut msg = [0u8; 48];
+    msg[16..48].copy_from_slice(h_sel);
+    for block_idx in 0..=u16::MAX {
         msg[..16].copy_from_slice(&tweak(KIND_FEW_CODE, UPORS_LAYER, 0, 0, block_idx, 0));
         let b = keyed(k_pub, &msg);
         for j in 0..28usize {
@@ -634,15 +651,12 @@ fn extract_upors_codewords(
                 out[got] = hex_unrank(v);
                 got += 1;
                 if got == UPORS_K {
-                    break;
+                    return Some(out);
                 }
             }
         }
-        block_idx = block_idx
-            .checked_add(1)
-            .expect("FEW_CODE block_idx overflow");
     }
-    out
+    None
 }
 
 fn upors_build_leaves(
@@ -874,7 +888,7 @@ fn upors_verify(
 }
 
 // ---------------------------------------------------------------------------
-// 7. Hypertree S-WOTS+Z grinding, Merkle heaps & verification (SPEC.md §11)
+// 7. Hypertree WOTS+C grinding, Merkle heaps & verification (SPEC.md §11)
 // ---------------------------------------------------------------------------
 
 fn chain_start(
@@ -899,27 +913,24 @@ fn grind_wots_msg(
     tree: u64,
     leaf: u16,
     child_root: &[u8; N],
-) -> (u16, u128) {
+) -> (u32, [usize; WOTS_N]) {
     let mut tmpl = [0u8; 36];
     tmpl[..16].copy_from_slice(&tweak(KIND_ONE_TIME_MSG, layer, tree, leaf, 0, 0));
     tmpl[16..32].copy_from_slice(child_root);
     let th = TreeHasher::new(Mode::Keyed(k_pub));
-    let mut out = [[0u8; 32]; 256];
+    let mut out = vec![[0u8; 32]; 1024];
     let mut start = 0u32;
-    while u16::try_from(start).is_ok() {
-        let count = usize::try_from((u32::from(u16::MAX) + 1 - start).min(256)).unwrap();
+    while start < (1u32 << 24) {
+        let count = usize::try_from(((1u32 << 24) - start).min(1024)).unwrap();
         th.hash_counter_range(&tmpl, 8, start, &mut out[..count]);
         for (i, h) in out[..count].iter().enumerate() {
-            if h[0] == 0 {
-                let mut rbuf = [0u8; 16];
-                rbuf[..15].copy_from_slice(&h[1..16]);
-                let ctr = u16::try_from(start + u32::try_from(i).unwrap()).unwrap();
-                return (ctr, u128::from_le_bytes(rbuf));
+            if let Some(digits) = decode_wots_c(h) {
+                return (start + u32::try_from(i).unwrap(), digits);
             }
         }
         start += u32::try_from(count).unwrap();
     }
-    panic!("S-WOTS+Z u16 counter exhausted");
+    panic!("WOTS+C u24 counter exhausted");
 }
 
 fn verify_wots_msg(
@@ -928,19 +939,15 @@ fn verify_wots_msg(
     tree: u64,
     leaf: u16,
     child_root: &[u8; N],
-    ctr: u16,
-) -> Option<u128> {
+    ctr: u32,
+) -> Option<[usize; WOTS_N]> {
+    assert!(ctr < (1u32 << 24));
     let mut msg = [0u8; 36];
     msg[..16].copy_from_slice(&tweak(KIND_ONE_TIME_MSG, layer, tree, leaf, 0, 0));
     msg[16..32].copy_from_slice(child_root);
-    msg[32..36].copy_from_slice(&u32::from(ctr).to_le_bytes());
+    msg[32..36].copy_from_slice(&ctr.to_le_bytes());
     let h = keyed(k_pub, &msg);
-    if h[0] != 0 {
-        return None;
-    }
-    let mut rbuf = [0u8; 16];
-    rbuf[..15].copy_from_slice(&h[1..16]);
-    Some(u128::from_le_bytes(rbuf))
+    decode_wots_c(&h)
 }
 
 fn build_wots_merkle_heap(
@@ -951,7 +958,7 @@ fn build_wots_merkle_heap(
     height: usize,
 ) -> Vec<[u8; N]> {
     let leaves = 1usize << height;
-    let tile = leaves.min(512);
+    let tile = leaves.min(2048);
     let tile_chains = tile * WOTS_N;
 
     let sec_h = TreeHasher::new(Mode::Keyed(k_sec));
@@ -1092,10 +1099,10 @@ fn merkle_reconstruct(
 // ---------------------------------------------------------------------------
 
 const SELF_TEST_ID: [u8; 32] = [
-    0xeb, 0x8e, 0x97, 0xa4, 0xff, 0x24, 0x46, 0xed, 0x37, 0x91, 0xcf, 0xd9, 0x51, 0x5e, 0x1e, 0x23,
-    0x98, 0x2f, 0xf2, 0x2b, 0x51, 0x03, 0xbc, 0x01, 0x17, 0xc3, 0xab, 0x69, 0xdb, 0x42, 0xba, 0xc4,
+    0x7e, 0xe7, 0xfe, 0x20, 0xda, 0xc8, 0x20, 0xb1, 0x76, 0x25, 0xca, 0xd3, 0xa3, 0x8a, 0x8a, 0xf6,
+    0x96, 0xa6, 0x9a, 0x74, 0x99, 0x2f, 0x01, 0xa7, 0xc9, 0xed, 0x36, 0x80, 0x69, 0x9d, 0x2c, 0x5c,
 ];
-const SELF_TEST_CTX: &[u8] = b"BLINCS-128-A2 reference vector v1";
+const SELF_TEST_CTX: &[u8] = b"BLINCS-48-X reference vector v1";
 const SELF_TEST_MSG: &[u8] = b"hello, BLINCS";
 const SELF_TEST_IMPRINT: &[u8; IMPRINT_LEN] =
     include_bytes!("../../test_vectors/reference-imprint-1.bin");
@@ -1103,8 +1110,8 @@ const SELF_TEST_IMPRINT: &[u8; IMPRINT_LEN] =
 /// Run the quick fail-closed startup self-test recommended by `SPEC.md §12`.
 ///
 /// 1. Initializes `blake3-servil-core` (running its own CPU-kernel self-test).
-/// 2. Verifies the canonical `BLINCS-128-A2` reference imprint (`~39 us`).
-/// 3. Confirms 1-bit tamper rejection and wrong-context rejection (`~78 us`).
+/// 2. Verifies the canonical `BLINCS-48-X` reference imprint (`~63 us`).
+/// 3. Confirms 1-bit tamper rejection and wrong-context rejection (`~126 us`).
 ///
 /// Panics immediately on any mismatch.
 pub fn self_test() {

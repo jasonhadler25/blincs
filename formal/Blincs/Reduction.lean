@@ -1,10 +1,10 @@
 /-
-  BLINCS-128-A2 Machine-Checked Deterministic Forgery Witness Dichotomy (`S-WOTS+Z` + `U-PORS`).
+  BLINCS-48-X Machine-Checked Deterministic Forgery Witness Dichotomy (`WOTS+C` + `U-PORS`).
 
   What this file mechanically proves (ZERO `sorry`, ZERO custom axioms, over an arbitrary
   deterministic `HashOracle`):
     Given ANY 32-byte `seed`, ANY honest signing transcript `Q`, ANY physical-address-indexed
-    honest hypertree counter table `honestCtr : Fin LAYERS → Nat → Nat → UInt16` (independent of
+    honest hypertree counter table `honestCtr : Fin LAYERS → Nat → Nat → U24` (independent of
     unused lower address bits), and ANY fresh valid forgery `(ctx*, M*, σ*)` passing
     `verify H (signetId H seed) ctx* M* σ*` with `(ctx*, M*) ∉ Q`:
 
@@ -21,7 +21,7 @@
       7. `wotsChainSecondPreimage`      -- forged value `a` distinct from EXACT honest chain node at step `s`,
                                            colliding onto EXACT honest `chainStepFn s (honestNode s)`
       8. `wotsChainPreimage`            -- `(σ.layers ℓ).wots c` equals EXACT honest chain node at strictly
-                                           smaller Sperner digit `wotsDigit rForged c < wotsDigit rHonest c`
+                                           smaller `WOTS+C` digit `wotsCDigit hForged c < wotsCDigit hHonest c`
       9. `uporsNodeSecondPreimage`      -- forged child pair distinct from EXACT honest U-PORS `treeNodeAt`
                                            children, colliding onto EXACT honest U-PORS `NODE`
      10. `uporsLeafSecondPreimage`      -- forged U-PORS endpoints distinct from EXACT honest endpoints,
@@ -31,8 +31,9 @@
      12. `uporsUnrevealedChainPreimage` -- bound to the EXACT parsed `(leafAddr, leaves, codes)` of `(ctx*, M*, σ*)`:
                                            coordinate `(leafAddr, leaves[j], c)` was never covered at depth `≤ d`
                                            in `Q`, yet `σ.uporsChains j c` equals the exact honest node `x_d`
-     13. `uporsCover`                   -- bound to the EXACT parsed, FRESH `(leafAddr, leaves, codes)` of
-                                           `(ctx*, M*, σ*)` (`leaves.length = 10`, `leaves.Nodup`,
+     13. `uporsCover`                   -- bound to the EXACT parsed, FRESH, CAP-VALID `(leafAddr, leaves, codes)`
+                                           of `(ctx*, M*, σ*)` (`leaves.length = 9`, `leaves.Nodup`,
+                                           `exactOctopusSibs UPORS_HEIGHT leaves ≤ UPORS_M_MAX`,
                                            `D_seed* ≠ querySeedDigest q`, `D_sel* ≠ querySelectDigest q`):
                                            every `(leaves[j], c)` is covered at depth `≤ uporsDigit (codes j) c` in `Q`.
 
@@ -69,17 +70,17 @@ def querySelectDigest (H : HashOracle) (k : DerivedKeys) (q : SignedQuery) : Byt
   fewSelectDigest H k.k_pub (querySeedDigest H k q) q.ctrFt
 
 /-- A query `q` covers U-PORS chain `(leafAddr, leaf, c)` at target depth `d` iff its selection digest
-    lands on `leafAddr`, extracts 10 distinct leaves, extracts 10 codewords via `FEW_CODE(D_seed, ctr_ft)`,
-    and opens `leaf` at some slot `i : Fin 10` with depth `≤ d`. -/
+    lands on `leafAddr`, extracts 9 distinct cap-valid leaves (`exactOctopusSibs ≤ 45`), extracts 9 codewords
+    chained from `D_sel` via `FEW_CODE(D_sel)`, and opens `leaf` at some slot `i : Fin 9` with depth `≤ d`. -/
 def queryCoversUporsChain (H : HashOracle) (k : DerivedKeys) (q : SignedQuery)
     (leafAddr leaf : Nat) (c : Fin UPORS_N) (d : Nat) : Prop :=
-  let Dseed := querySeedDigest H k q
   let Dsel  := querySelectDigest H k q
   extractLeafAddr Dsel = leafAddr ∧
   ∃ (leaves : List Nat) (hLen : leaves.length = UPORS_K)
     (qCodes : Fin UPORS_K → Fin UPORS_C) (i : Fin UPORS_K),
     extractUporsLeaves Dsel = some leaves ∧
-    extractUporsCodes H k.k_pub Dseed q.ctrFt = some qCodes ∧
+    exactOctopusSibs UPORS_HEIGHT leaves ≤ UPORS_M_MAX ∧
+    extractUporsCodes H k.k_pub Dsel = some qCodes ∧
     leaves[i.val]'(by omega) = leaf ∧
     uporsDigit (qCodes i) c ≤ d
 
@@ -94,13 +95,13 @@ def forgedSelectDigest (H : HashOracle) (k : DerivedKeys) (ctx M : List UInt8) (
   fewSelectDigest H k.k_pub (forgedSeedDigest H k ctx M σ) σ.ctrFt
 
 /--
-  **Exact Target-Bound & Provenance-Bound Witness Type** for any valid `BLINCS-128-A2` forgery
+  **Exact Target-Bound & Provenance-Bound Witness Type** for any valid `BLINCS-48-X` forgery
   `(ctx, M, σ)` against `seed`, honest transcript `Q`, and physical-address-indexed counter table
-  `honestCtr : Fin LAYERS → Nat → Nat → UInt16` (`ℓ, tree, leaf ↦ ctr`).
+  `honestCtr : Fin LAYERS → Nat → Nat → U24` (`ℓ, tree, leaf ↦ ctr`).
 -/
 inductive ForgeryWitness (H : HashOracle) (seed : Bytes 32)
     (Q : List SignedQuery)
-    (honestCtr : Fin LAYERS → Nat → Nat → UInt16)
+    (honestCtr : Fin LAYERS → Nat → Nat → U24)
     (ctx M : List UInt8) (σ : Imprint) : Prop where
   /-- (1) Explicit 2nd-preimage of `Keyed(K_msg, ·)`: same `(e, ctx)`, distinct `M ≠ q.msg`, same `h_msg`. -/
   | contentHashSecondPreimage
@@ -175,27 +176,27 @@ inductive ForgeryWitness (H : HashOracle) (seed : Bytes 32)
               chainStepFn H (deriveKeys H seed).k_pub (UInt8.ofNat ℓ.val) tree hTree leaf c.val s
                 (chainIter (chainStepFn H (deriveKeys H seed).k_pub (UInt8.ofNat ℓ.val) tree hTree leaf c.val)
                   0 s (chainStart H (deriveKeys H seed).k_sec (UInt8.ofNat ℓ.val) tree hTree leaf WOTS_N c.val)))
-  /-- (8) Target-bound `S-WOTS+Z` chain preimage inversion strictly before the honest Sperner digit. -/
+  /-- (8) Target-bound `WOTS+C` chain preimage inversion strictly before the honest 6-bit digit. -/
   | wotsChainPreimage
       (ℓ : Fin LAYERS) (leafAddr : Nat) (hAddr : leafAddr < 2 ^ HYPER_BITS)
       (mForged : Bytes 16)
       (hne : mForged ≠ honestLayerInput H (deriveKeys H seed).k_sec (deriveKeys H seed).k_pub leafAddr hAddr ℓ.val)
       (c : Fin WOTS_N)
-      (hlt : wotsDigit (wotsRank (wotsMsgHash H (deriveKeys H seed).k_pub (UInt8.ofNat ℓ.val)
+      (hlt : wotsCDigit (wotsMsgHash H (deriveKeys H seed).k_pub (UInt8.ofNat ℓ.val)
                 (layerTree leafAddr ℓ.val) (layerTree_lt_48 leafAddr ℓ.val hAddr)
-                (UInt16.ofNat (layerLeaf leafAddr ℓ.val)) mForged (σ.layers ℓ).ctr)) c <
-             wotsDigit (wotsRank (wotsMsgHash H (deriveKeys H seed).k_pub (UInt8.ofNat ℓ.val)
+                (UInt16.ofNat (layerLeaf leafAddr ℓ.val)) mForged (σ.layers ℓ).ctr) c <
+             wotsCDigit (wotsMsgHash H (deriveKeys H seed).k_pub (UInt8.ofNat ℓ.val)
                 (layerTree leafAddr ℓ.val) (layerTree_lt_48 leafAddr ℓ.val hAddr)
                 (UInt16.ofNat (layerLeaf leafAddr ℓ.val))
                 (honestLayerInput H (deriveKeys H seed).k_sec (deriveKeys H seed).k_pub leafAddr hAddr ℓ.val)
-                (honestCtr ℓ (layerTree leafAddr ℓ.val) (layerLeaf leafAddr ℓ.val)))) c)
+                (honestCtr ℓ (layerTree leafAddr ℓ.val) (layerLeaf leafAddr ℓ.val))) c)
       (hpre : (σ.layers ℓ).wots c =
               chainIter (chainStepFn H (deriveKeys H seed).k_pub (UInt8.ofNat ℓ.val)
                   (layerTree leafAddr ℓ.val) (layerTree_lt_48 leafAddr ℓ.val hAddr)
                   (UInt16.ofNat (layerLeaf leafAddr ℓ.val)) c.val)
-                0 (wotsDigit (wotsRank (wotsMsgHash H (deriveKeys H seed).k_pub (UInt8.ofNat ℓ.val)
+                0 (wotsCDigit (wotsMsgHash H (deriveKeys H seed).k_pub (UInt8.ofNat ℓ.val)
                     (layerTree leafAddr ℓ.val) (layerTree_lt_48 leafAddr ℓ.val hAddr)
-                    (UInt16.ofNat (layerLeaf leafAddr ℓ.val)) mForged (σ.layers ℓ).ctr)) c)
+                    (UInt16.ofNat (layerLeaf leafAddr ℓ.val)) mForged (σ.layers ℓ).ctr) c)
                 (chainStart H (deriveKeys H seed).k_sec (UInt8.ofNat ℓ.val)
                   (layerTree leafAddr ℓ.val) (layerTree_lt_48 leafAddr ℓ.val hAddr)
                   (UInt16.ofNat (layerLeaf leafAddr ℓ.val)) WOTS_N c.val))
@@ -242,9 +243,10 @@ inductive ForgeryWitness (H : HashOracle) (seed : Bytes 32)
            of `(ctx, M, σ)`, never covered at depth `≤ d` in `Q`, yet `σ.uporsChains j c` equals `x_d`. -/
   | uporsUnrevealedChainPreimage
       (leaves : List Nat) (hLen : leaves.length = UPORS_K) (hNodup : leaves.Nodup)
+      (hCap : exactOctopusSibs UPORS_HEIGHT leaves ≤ UPORS_M_MAX)
       (codes : Fin UPORS_K → Fin UPORS_C)
       (hLeaves : extractUporsLeaves (forgedSelectDigest H (deriveKeys H seed) ctx M σ) = some leaves)
-      (hCodes : extractUporsCodes H (deriveKeys H seed).k_pub (forgedSeedDigest H (deriveKeys H seed) ctx M σ) σ.ctrFt = some codes)
+      (hCodes : extractUporsCodes H (deriveKeys H seed).k_pub (forgedSelectDigest H (deriveKeys H seed) ctx M σ) = some codes)
       (j : Fin UPORS_K) (c : Fin UPORS_N)
       (hNotCovered : ∀ q ∈ Q, ¬ queryCoversUporsChain H (deriveKeys H seed) q
         (extractLeafAddr (forgedSelectDigest H (deriveKeys H seed) ctx M σ))
@@ -259,25 +261,27 @@ inductive ForgeryWitness (H : HashOracle) (seed : Bytes 32)
                     (extractLeafAddr (forgedSelectDigest H (deriveKeys H seed) ctx M σ))
                     (extractLeafAddr_lt_48 (forgedSelectDigest H (deriveKeys H seed) ctx M σ))
                     (UInt16.ofNat (leaves[j.val]'(by omega))) UPORS_N c.val))
-  /-- (13) Provenance-bound, FRESH `U-PORS` cover event: tied directly to the EXACT parsed
-           `(leafAddr*, leaves*, codes*)` of the forged `(ctx, M, σ)` with `leaves*.length = 10`,
-           `leaves*.Nodup`, and fresh digests `D_seed* ≠ querySeedDigest q`, `D_sel* ≠ querySelectDigest q`! -/
+  /-- (13) Provenance-bound, FRESH, CAP-VALID `U-PORS` cover event: tied directly to the EXACT parsed
+           `(leafAddr*, leaves*, codes*)` of the forged `(ctx, M, σ)` with `leaves*.length = 9`,
+           `leaves*.Nodup`, `exactOctopusSibs UPORS_HEIGHT leaves* ≤ 45`, and fresh digests
+           `D_seed* ≠ querySeedDigest q`, `D_sel* ≠ querySelectDigest q`! -/
   | uporsCover
       (leaves : List Nat) (hLen : leaves.length = UPORS_K) (hNodup : leaves.Nodup)
+      (hCap : exactOctopusSibs UPORS_HEIGHT leaves ≤ UPORS_M_MAX)
       (codes : Fin UPORS_K → Fin UPORS_C)
       (hFreshSeed : ∀ q ∈ Q, forgedSeedDigest H (deriveKeys H seed) ctx M σ ≠ querySeedDigest H (deriveKeys H seed) q)
       (hFreshSel : ∀ q ∈ Q, forgedSelectDigest H (deriveKeys H seed) ctx M σ ≠ querySelectDigest H (deriveKeys H seed) q)
       (hLeaves : extractUporsLeaves (forgedSelectDigest H (deriveKeys H seed) ctx M σ) = some leaves)
-      (hCodes : extractUporsCodes H (deriveKeys H seed).k_pub (forgedSeedDigest H (deriveKeys H seed) ctx M σ) σ.ctrFt = some codes)
+      (hCodes : extractUporsCodes H (deriveKeys H seed).k_pub (forgedSelectDigest H (deriveKeys H seed) ctx M σ) = some codes)
       (hCover : ∀ (j : Fin UPORS_K) (c : Fin UPORS_N),
         ∃ q ∈ Q, queryCoversUporsChain H (deriveKeys H seed) q
           (extractLeafAddr (forgedSelectDigest H (deriveKeys H seed) ctx M σ))
           (leaves[j.val]'(by omega)) c (uporsDigit (codes j) c))
 
-/-- Helper: extract a target-bound `S-WOTS+Z` or Merkle collision/preimage when layer `ℓ`
+/-- Helper: extract a target-bound `WOTS+C` or Merkle collision/preimage when layer `ℓ`
     reconstructs the honest tree root from a distinct input `mForged ≠ honestLayerInput`. -/
 private theorem layer_forgery_extract (H : HashOracle) (seed : Bytes 32)
-    (Q : List SignedQuery) (honestCtr : Fin LAYERS → Nat → Nat → UInt16)
+    (Q : List SignedQuery) (honestCtr : Fin LAYERS → Nat → Nat → U24)
     (ctx M : List UInt8) (σ : Imprint)
     (leafAddr : Nat) (hAddr : leafAddr < 2 ^ HYPER_BITS)
     (ℓ : Fin LAYERS) (mForged : Bytes 16)
@@ -301,26 +305,23 @@ private theorem layer_forgery_extract (H : HashOracle) (seed : Bytes 32)
   let lByte := UInt8.ofNat ℓ.val
   let leafU16 := UInt16.ofNat leaf
   let hForged := wotsMsgHash H k.k_pub lByte tree hTree leafU16 mForged (σ.layers ℓ).ctr
-  let rForged := wotsRank hForged
-  let forgedPk := chainVerifyGeneric H k.k_pub lByte tree hTree leafU16 WOTS_STEPS (wotsDigit rForged) (σ.layers ℓ).wots
+  let forgedPk := chainVerifyGeneric H k.k_pub lByte tree hTree leafU16 WOTS_STEPS (wotsCDigit hForged) (σ.layers ℓ).wots
   let honestPk := chainLeafPk H k.k_sec k.k_pub lByte tree hTree leafU16 WOTS_N WOTS_STEPS
   by_cases hpk : forgedPk = honestPk
   · let forgedEnds : Fin WOTS_N → Bytes 16 := fun c =>
       chainIter (chainStepFn H k.k_pub lByte tree hTree leafU16 c.val)
-        (wotsDigit rForged c) (WOTS_STEPS - wotsDigit rForged c) ((σ.layers ℓ).wots c)
+        (wotsCDigit hForged c) (WOTS_STEPS - wotsCDigit hForged c) ((σ.layers ℓ).wots c)
     let honestEnds : Fin WOTS_N → Bytes 16 := fun c =>
       chainEndpoint H k.k_sec k.k_pub lByte tree hTree leafU16 WOTS_N WOTS_STEPS c.val
     by_cases hends : forgedEnds = honestEnds
     · let mHonest := honestLayerInput H k.k_sec k.k_pub leafAddr hAddr ℓ.val
       let cHon := honestCtr ℓ tree leaf
       let hHonest := wotsMsgHash H k.k_pub lByte tree hTree leafU16 mHonest cHon
-      let rHonest := wotsRank hHonest
-      by_cases hRankEq : rForged = rHonest
-      · have hMsgCol : hForged = hHonest := validWotsHash_eq_of_rank_eq hStepOk hHonCtrValid hRankEq
-        exact ForgeryWitness.wotsMsgSecondPreimage ℓ leafAddr hAddr mForged hne hMsgCol
-      · rcases wots_dominance (wotsRank_lt_sliceCount hForged) (wotsRank_lt_sliceCount hHonest) hRankEq with ⟨c, hlt⟩
+      by_cases hMsgCol : hForged = hHonest
+      · exact ForgeryWitness.wotsMsgSecondPreimage ℓ leafAddr hAddr mForged hne hMsgCol
+      · rcases wotsC_dominance hStepOk hHonCtrValid hMsgCol with ⟨c, hlt⟩
         have hchainEq : forgedEnds c = honestEnds c := congrFun hends c
-        have hd1 : wotsDigit rForged c ≤ WOTS_STEPS := wotsDigit_le_39 (wotsRank_lt_sliceCount hForged) c
+        have hd1 : wotsCDigit hForged c ≤ WOTS_STEPS := wotsCDigit_le_steps hStepOk c
         rcases chain_forgery_extract
             (chainStepFn H k.k_pub lByte tree hTree leafU16 c.val)
             (chainStart H k.k_sec lByte tree hTree leafU16 WOTS_N c.val)
@@ -341,9 +342,9 @@ private theorem layer_forgery_extract (H : HashOracle) (seed : Bytes 32)
       ⟨lvl, p, L₁, R₁, h1, h2, hdiff, hcol⟩
     exact ForgeryWitness.hypertreeNodeSecondPreimage ℓ tree hTree lvl p ⟨h1, h2⟩ L₁ R₁ hdiff hcol
 
-/-- Helper: top-down induction on the 4 hypertree layers (`k = 4` down to `0`). -/
+/-- Helper: top-down induction on the 6 hypertree layers (`k = 6` down to `0`). -/
 private theorem hypertree_top_down_extract (H : HashOracle) (seed : Bytes 32)
-    (Q : List SignedQuery) (honestCtr : Fin LAYERS → Nat → Nat → UInt16)
+    (Q : List SignedQuery) (honestCtr : Fin LAYERS → Nat → Nat → U24)
     (ctx M : List UInt8) (σ : Imprint)
     (leafAddr : Nat) (hAddr : leafAddr < 2 ^ HYPER_BITS)
     (hHonCtrs : ∀ ℓ : Fin LAYERS, ValidWotsHash
@@ -376,7 +377,7 @@ private theorem hypertree_top_down_extract (H : HashOracle) (seed : Bytes 32)
     extract a target-bound U-PORS Octopus `NODE` / `ONE_TIME_KEY` / `CHAIN` collision,
     a provenance-bound unrevealed chain preimage, OR the provenance-bound fresh `uporsCover` event! -/
 private theorem upors_forgery_extract (H : HashOracle) (seed : Bytes 32)
-    (Q : List SignedQuery) (honestCtr : Fin LAYERS → Nat → Nat → UInt16)
+    (Q : List SignedQuery) (honestCtr : Fin LAYERS → Nat → Nat → U24)
     (ctx M : List UInt8) (σ : Imprint)
     (hFreshSeed : ∀ q ∈ Q, forgedSeedDigest H (deriveKeys H seed) ctx M σ ≠ querySeedDigest H (deriveKeys H seed) q)
     (hFreshSel : ∀ q ∈ Q, forgedSelectDigest H (deriveKeys H seed) ctx M σ ≠ querySelectDigest H (deriveKeys H seed) q)
@@ -397,7 +398,7 @@ private theorem upors_forgery_extract (H : HashOracle) (seed : Bytes 32)
   | none =>
     rw [hLeaves] at hUpors; cases hUpors
   | some leaves =>
-    cases hCodes : extractUporsCodes H k.k_pub D_seed σ.ctrFt with
+    cases hCodes : extractUporsCodes H k.k_pub (fewSelectDigest H k.k_pub D_seed σ.ctrFt) with
     | none =>
       rw [hLeaves, hCodes] at hUpors; cases hUpors
     | some codes =>
@@ -423,6 +424,15 @@ private theorem upors_forgery_extract (H : HashOracle) (seed : Bytes 32)
       | some res =>
         rcases res with ⟨top, remSibs⟩
         rw [hClimb] at hUpors'
+        have hMapFst : leafPairs.map Prod.fst = leaves := by
+          apply List.ext_getElem
+          · simp [leafPairs, hLen]
+          · intro i h1 h2
+            simp [leafPairs]
+        have hCap : exactOctopusSibs UPORS_HEIGHT leaves ≤ UPORS_M_MAX := by
+          have hle := octopusClimb_exactSibs_le _ hClimb
+          rw [hMapFst, List.length_ofFn] at hle
+          exact hle
         cases top with
         | nil => cases hUpors'
         | cons head tail =>
@@ -442,7 +452,7 @@ private theorem upors_forgery_extract (H : HashOracle) (seed : Bytes 32)
                     (List.ofFn σ.uporsSibs) remSibs hClimb with hAllLeaves | ⟨lvl, p, L₁, R₁, h1, h2, hdiff, hcol⟩
                 · by_cases hCover : ∀ (j : Fin UPORS_K) (c : Fin UPORS_N),
                       ∃ q ∈ Q, queryCoversUporsChain H k q leafAddr (leaves[j.val]'(by omega)) c (uporsDigit (codes j) c)
-                  · exact ForgeryWitness.uporsCover leaves hLen hNodup codes hFreshSeed hFreshSel hLeaves hCodes hCover
+                  · exact ForgeryWitness.uporsCover leaves hLen hNodup hCap codes hFreshSeed hFreshSel hLeaves hCodes hCover
                   · have hNotAllJ : ∃ j : Fin UPORS_K, ¬ ∀ c : Fin UPORS_N,
                         ∃ q ∈ Q, queryCoversUporsChain H k q leafAddr (leaves[j.val]'(by omega)) c (uporsDigit (codes j) c) :=
                       Classical.not_forall.mp hCover
@@ -475,24 +485,24 @@ private theorem upors_forgery_extract (H : HashOracle) (seed : Bytes 32)
                           (chainStepFn H k.k_pub uporsLayerByte leafAddr hAddr48 leafU16 c.val)
                           (chainStart H k.k_sec uporsLayerByte leafAddr hAddr48 leafU16 UPORS_N c.val)
                           (σ.uporsChains j c) hd hchainEq with hpre | ⟨s, a, _, hs2, hne_a, hcol⟩
-                      · exact ForgeryWitness.uporsUnrevealedChainPreimage leaves hLen hNodup codes hLeaves hCodes j c hNever hpre
+                      · exact ForgeryWitness.uporsUnrevealedChainPreimage leaves hLen hNodup hCap codes hLeaves hCodes j c hNever hpre
                       · exact ForgeryWitness.uporsChainSecondPreimage leafAddr hAddr48 leafU16 c s hs2 a hne_a hcol
                     · exact ForgeryWitness.uporsLeafSecondPreimage leafAddr hAddr48 leafU16 forgedEnds hEnds hPkEq
                 · exact ForgeryWitness.uporsNodeSecondPreimage leafAddr hAddr48 lvl p ⟨h1, h2⟩ L₁ R₁ hdiff hcol
               · simp only [hAll] at hUpors'; cases hUpors'
 
 /--
-  **Main Machine-Checked Forgery Witness Dichotomy Theorem (`BLINCS-128-A2`):**
+  **Main Machine-Checked Forgery Witness Dichotomy Theorem (`BLINCS-48-X`):**
   For ANY `HashOracle`, ANY `seed`, ANY honest signing transcript `Q`, ANY physical-address-indexed
   valid counter assignment `honestCtr` along the forged address `leafAddr*`, and ANY fresh valid
   forgery `(ctx*, M*, σ*)` (`(ctx*, M*) ∉ Q`, `verify H (signetId H seed) ctx* M* σ*`),
   at least ONE of the 13 target-bound, provenance-bound `ForgeryWitness` events holds!
 
-  Notice `hHonCtrs` is required ONLY along the forged signature's leaf address `leafAddr*` (4 layers),
-  NOT across all `2^33` unused addresses!
+  Notice `hHonCtrs` is required ONLY along the forged signature's leaf address `leafAddr*` (6 layers),
+  NOT across all `2^48` unused addresses!
 -/
 theorem blincs_forgery_dichotomy (H : HashOracle) (seed : Bytes 32)
-    (Q : List SignedQuery) (honestCtr : Fin LAYERS → Nat → Nat → UInt16)
+    (Q : List SignedQuery) (honestCtr : Fin LAYERS → Nat → Nat → U24)
     (ctx M : List UInt8) (σ : Imprint)
     (hHonCtrs :
       let k := deriveKeys H seed
@@ -553,19 +563,19 @@ theorem blincs_forgery_dichotomy (H : HashOracle) (seed : Bytes 32)
           honestLayerInput H k.k_sec k.k_pub leafAddr hAddr LAYERS := by
         have hLeft : (hypertreeVerifyUpTo H k.k_pub leafAddr hAddr uporsNode σ.layers LAYERS (Nat.le_refl _)).2 = k.root := hRootEq
         rw [hLeft]
-        have hzero : layerTree leafAddr 3 = 0 := top_layerTree_zero hAddr
-        have h4 : honestLayerInput H k.k_sec k.k_pub leafAddr hAddr LAYERS =
-            treeRoot H k.k_sec k.k_pub 3 (layerTree leafAddr 3) (layerTree_lt_48 leafAddr 3 hAddr)
-              (layerHeightNat 3) WOTS_N WOTS_STEPS := rfl
-        have hkroot : k.root = treeRoot H k.k_sec k.k_pub 3 0 (by decide) TOP_HEIGHT WOTS_N WOTS_STEPS := rfl
-        rw [h4, hkroot]
+        have hzero : layerTree leafAddr 5 = 0 := top_layerTree_zero hAddr
+        have h6 : honestLayerInput H k.k_sec k.k_pub leafAddr hAddr LAYERS =
+            treeRoot H k.k_sec k.k_pub 5 (layerTree leafAddr 5) (layerTree_lt_48 leafAddr 5 hAddr)
+              (layerHeightNat 5) WOTS_N WOTS_STEPS := rfl
+        have hkroot : k.root = treeRoot H k.k_sec k.k_pub 5 0 (by decide) TOP_HEIGHT WOTS_N WOTS_STEPS := rfl
+        rw [h6, hkroot]
         have hTop : ∀ (t : Nat) (ht : t < 2 ^ 48), t = 0 →
-            treeRoot H k.k_sec k.k_pub 3 0 (by decide) TOP_HEIGHT WOTS_N WOTS_STEPS =
-            treeRoot H k.k_sec k.k_pub 3 t ht (layerHeightNat 3) WOTS_N WOTS_STEPS := by
+            treeRoot H k.k_sec k.k_pub 5 0 (by decide) TOP_HEIGHT WOTS_N WOTS_STEPS =
+            treeRoot H k.k_sec k.k_pub 5 t ht (layerHeightNat 5) WOTS_N WOTS_STEPS := by
           intro t ht h0; subst h0
-          have hh : layerHeightNat 3 = TOP_HEIGHT := rfl
+          have hh : layerHeightNat 5 = TOP_HEIGHT := rfl
           simp only [hh]
-        exact hTop (layerTree leafAddr 3) (layerTree_lt_48 leafAddr 3 hAddr) hzero
+        exact hTop (layerTree leafAddr 5) (layerTree_lt_48 leafAddr 5 hAddr) hzero
       rcases hypertree_top_down_extract H seed Q honestCtr ctx M σ leafAddr hAddr
           hHonCtrs uporsNode LAYERS (Nat.le_refl _) hHtOk hTopMatch with
         hUporsEq | hWitness

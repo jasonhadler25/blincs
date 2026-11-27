@@ -1,6 +1,7 @@
 /-
-  BLINCS-128-A2 Declarative Specification: Tweaks & Context Framing.
+  BLINCS-48-X Declarative Specification: Tweaks & Context Framing.
   Proves exact 16-byte serialization, global tweak injectivity across all 8 kinds,
+  zero-wrap unsigned coordinate bounds (`tweak_fields_no_wrap`),
   disjointness of hypertree vs U-PORS layer namespaces, and prefix-free context framing.
 -/
 import Blincs.Params
@@ -36,7 +37,7 @@ theorem TweakKind.toUInt8_injective {a b : TweakKind} (h : a.toUInt8 = b.toUInt8
 def uporsLayerByte : UInt8 :=
   UInt8.ofNat UPORS_LAYER
 
-/-- The U-PORS layer byte (`128`) is strictly disjoint from all hypertree layer bytes (`0..3`). -/
+/-- The U-PORS layer byte (`0x80 = 128`) is strictly disjoint from all hypertree layer bytes (`0..5`). -/
 theorem uporsLayerByte_ne_htLayer (ℓ : Fin LAYERS) :
     uporsLayerByte ≠ UInt8.ofNat ℓ.val := by
   intro h
@@ -177,5 +178,29 @@ theorem frameContext_injective {c₁ c₂ : List UInt8}
     (heq : frameContext c₁ = frameContext c₂) : c₁ = c₂ := by
   have h' : frameContext c₁ ++ [] = frameContext c₂ ++ [] := by simpa using heq
   exact (frameContext_prefix_free h₁ h₂ h').1
+
+/-- **Zero-Wrap Tweak Coordinate Bounds (`SPEC.md §§3, 5`):** every coordinate actually constructed
+    by `BLINCS-48-X` (leaf index, chain slot, chain index, chain step, Merkle level, node index,
+    and `FEW_CODE` block index) fits strictly inside its unsigned tweak field without modular wrap. -/
+theorem tweak_fields_no_wrap :
+    (∀ leaf < TOP_LEAVES, (UInt16.ofNat leaf).toNat = leaf) ∧
+    (∀ leaf < UPORS_LEAVES, (UInt16.ofNat leaf).toNat = leaf) ∧
+    (∀ leaf < TOP_LEAVES, ∀ c < WOTS_N, (UInt32.ofNat (leaf * WOTS_N + c)).toNat = leaf * WOTS_N + c) ∧
+    (∀ leaf < UPORS_LEAVES, ∀ c < UPORS_N, (UInt32.ofNat (leaf * UPORS_N + c)).toNat = leaf * UPORS_N + c) ∧
+    (∀ c < WOTS_N, (UInt16.ofNat c).toNat = c) ∧
+    (∀ s < WOTS_STEPS, (UInt32.ofNat s).toNat = s) ∧
+    (∀ lvl ≤ TOP_HEIGHT, (UInt16.ofNat lvl).toNat = lvl) ∧
+    (∀ p < TOP_LEAVES, (UInt32.ofNat p).toNat = p) ∧
+    (∀ blk < 65536, (UInt16.ofNat blk).toNat = blk) := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · intro leaf h; simp [UInt16.toNat_ofNat', TOP_LEAVES, TOP_HEIGHT] at h ⊢; omega
+  · intro leaf h; simp [UInt16.toNat_ofNat', UPORS_LEAVES, UPORS_HEIGHT] at h ⊢; omega
+  · intro leaf hl c hc; simp [UInt32.toNat_ofNat', TOP_LEAVES, TOP_HEIGHT, WOTS_N] at hl hc ⊢; omega
+  · intro leaf hl c hc; simp [UInt32.toNat_ofNat', UPORS_LEAVES, UPORS_HEIGHT, UPORS_N] at hl hc ⊢; omega
+  · intro c h; simp [UInt16.toNat_ofNat', WOTS_N] at h ⊢; omega
+  · intro s h; simp [UInt32.toNat_ofNat', WOTS_STEPS, WOTS_W] at h ⊢; omega
+  · intro lvl h; simp [UInt16.toNat_ofNat', TOP_HEIGHT] at h ⊢; omega
+  · intro p h; simp [UInt32.toNat_ofNat', TOP_LEAVES, TOP_HEIGHT] at h ⊢; omega
+  · intro blk h; simp [UInt16.toNat_ofNat']; omega
 
 end Blincs

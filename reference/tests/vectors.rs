@@ -1,9 +1,9 @@
-//! Exhaustive canonical test-vector verification for `blincs-reference` (`BLINCS-128-A2`).
+//! Exhaustive canonical test-vector verification for `blincs-reference` (`BLINCS-48-X`).
 
 use blake3_servil_core::convenience::hash;
 use blincs_reference::{
-    IMPRINT_LEN, Signet, SignetId, UPORS_C, UPORS_LEN, UPORS_STEPS, UPORS_SUM, WOTS_STEPS,
-    WOTS_SUM, hex_unrank, self_test, sperner_slice_cardinality, sperner_unrank,
+    IMPRINT_LEN, Signet, SignetId, UPORS_C, UPORS_LEN, UPORS_STEPS, UPORS_SUM, WOTS_N, WOTS_STEPS,
+    WOTS_SUM, WOTS_Z, decode_wots_c, hex_unrank, self_test,
 };
 
 fn decode_hex(s: &str) -> Vec<u8> {
@@ -46,41 +46,62 @@ fn hex_unrank_invariants_hold() {
 }
 
 #[test]
-fn sperner_cardinality_and_antichain_hold() {
-    let card = sperner_slice_cardinality();
-    assert_eq!(card, 1_973_221_677_906_098_493_567_206_234_001_571_000u128);
-    assert!(card > (1u128 << 120));
-
-    let samples = [
-        0u128,
-        1,
-        42,
-        (1u128 << 64) - 1,
-        (1u128 << 119) + 12345,
-        (1u128 << 120) - 1,
-    ];
-    let vecs: Vec<_> = samples.iter().map(|&r| sperner_unrank(r)).collect();
-    for (idx, v) in vecs.iter().enumerate() {
-        assert_eq!(v.iter().sum::<usize>(), WOTS_SUM);
-        assert!(v.iter().all(|&d| d <= WOTS_STEPS));
-        for (j, other) in vecs.iter().enumerate() {
-            if idx != j {
-                assert!(!v.iter().zip(other.iter()).all(|(a, b)| a <= b));
-            }
+fn wots_c_decode_bounds_and_antichain_hold() {
+    let pack = |z: u128, ds: [usize; WOTS_N]| -> [u8; 32] {
+        let mut lo = z & 3;
+        for (i, &d) in ds.iter().enumerate() {
+            lo |= u128::try_from(d).unwrap() << (WOTS_Z + 6 * i);
         }
+        let mut out = [0u8; 32];
+        out[..16].copy_from_slice(&lo.to_le_bytes());
+        out
+    };
+    // Valid vector summing to 679 (11 * 32 + 9 * 33 + 1 * 30 = 352 + 297 + 30 = 679)
+    let mut v1 = [32usize; WOTS_N];
+    for x in &mut v1[11..20] {
+        *x = 33;
     }
+    v1[20] = 30;
+    assert_eq!(v1.iter().sum::<usize>(), WOTS_SUM);
+    let d1 = pack(0, v1);
+    assert_eq!(decode_wots_c(&d1), Some(v1));
+
+    // Non-zero z bits must reject.
+    for z in 1u128..=3 {
+        assert_eq!(decode_wots_c(&pack(z, v1)), None);
+    }
+    // Wrong sum must reject.
+    let mut v_bad_sum = v1;
+    v_bad_sum[0] += 1;
+    assert_eq!(decode_wots_c(&pack(0, v_bad_sum)), None);
+    // Out-of-range 6-bit digit (>= 60) must reject even if sum == 679.
+    let mut v_bad_digit = v1;
+    v_bad_digit[0] = 60;
+    v_bad_digit[1] -= 28;
+    assert_eq!(v_bad_digit.iter().sum::<usize>(), WOTS_SUM);
+    assert_eq!(decode_wots_c(&pack(0, v_bad_digit)), None);
+
+    // Distinct valid vectors form a strict antichain.
+    let mut v2 = v1;
+    v2[0] += 1;
+    v2[1] -= 1;
+    assert!(v2.iter().all(|&x| x <= WOTS_STEPS));
+    let dec1 = decode_wots_c(&pack(0, v1)).unwrap();
+    let dec2 = decode_wots_c(&pack(0, v2)).unwrap();
+    assert!(!dec1.iter().zip(dec2.iter()).all(|(a, b)| a <= b));
+    assert!(!dec2.iter().zip(dec1.iter()).all(|(a, b)| a <= b));
 }
 
 #[test]
 fn matches_canonical_reference_vector_byte_for_byte() {
     let seed: [u8; 32] = core::array::from_fn(|i| u8::try_from(i).unwrap());
     let draw = [0x07u8; 32];
-    let ctx = b"BLINCS-128-A2 reference vector v1";
+    let ctx = b"BLINCS-48-X reference vector v1";
     let msg = b"hello, BLINCS";
 
     let signet = Signet::from_seed(&seed);
     let expected_id: [u8; 32] =
-        decode_hex("eb8e97a4ff2446ed3791cfd9515e1e23982ff22b5103bc0117c3ab69db42bac4")
+        decode_hex("7ee7fe20dac820b17625cad3a38a8af696a69a74992f01a7c9ed3680699d2c5c")
             .try_into()
             .unwrap();
     assert_eq!(signet.id(), SignetId(expected_id));
@@ -90,7 +111,7 @@ fn matches_canonical_reference_vector_byte_for_byte() {
     assert_eq!(&imp, expected);
     assert_eq!(
         hash(&imp).as_bytes(),
-        decode_hex("43c5443aaaf0698cde86c7d2d24898cbac6e7980734023f759d2eac72e79cef2").as_slice()
+        decode_hex("cefb8846c95ff890a8e7cb1a51a2d2c2032c3f0de9e57fef8fc3d7943723ac22").as_slice()
     );
 
     assert!(signet.id().verify(ctx, msg, &imp));
@@ -104,13 +125,15 @@ fn matches_canonical_reference_vector_byte_for_byte() {
         16,
         32,
         36,
-        516,
-        1219,
-        1220,
-        1222,
-        1718,
-        2216,
-        2714,
+        468,
+        1187,
+        1188,
+        1191,
+        1639,
+        2090,
+        2541,
+        2992,
+        3443,
         IMPRINT_LEN - 1,
     ] {
         let mut bad = imp;
@@ -177,7 +200,7 @@ fn matches_all_four_edge_vectors_byte_for_byte() {
             "edge vector {expected_name} failed verify"
         );
 
-        // Verify canonical trailing zero-padding check on `one-byte-zero` (sibs = 41 / 44).
+        // Verify canonical trailing zero-padding check on `one-byte-zero` (sibs = 44 / 45).
         if *expected_name == "one-byte-zero" {
             let last_pad_byte = 32 + UPORS_LEN - 1;
             assert_eq!(got[last_pad_byte], 0);

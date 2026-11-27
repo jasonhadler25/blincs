@@ -11,7 +11,7 @@
 \usepackage{enumitem}
 \usepackage{microtype}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,decorations.pathreplacing}
 \emergencystretch=1.5em
 
 \hypersetup{
@@ -30,10 +30,10 @@
 \theoremstyle{remark}
 \newtheorem{remark}[theorem]{Remark}
 
-\newcommand{\BLINCS}{\textsf{BLINCS-128-A2}}
-\newcommand{\BLINCSsixfour}{\textsf{BLINCS-128-64}}
-\newcommand{\BLINCSsixfours}{\textsf{BLINCS-128-64s}}
-\newcommand{\SWOTS}{\textsf{S-WOTS+Z}}
+\newcommand{\BLINCS}{\textsf{BLINCS-48-X}}
+\newcommand{\BLINCSsixfour}{\textsf{BLINCS-64-EQ}}
+\newcommand{\BLINCSsixfours}{\textsf{BLINCS-64-S}}
+\newcommand{\WOTSC}{\textsf{WOTS+C}}
 \newcommand{\UPORS}{\textsf{U-PORS}}
 \newcommand{\BLAKE}{\textsf{BLAKE3}}
 \newcommand{\Keyed}{\mathrm{Keyed}}
@@ -46,145 +46,169 @@
 \newcommand{\calF}{\mathcal{F}}
 \newcommand{\calC}{\mathcal{C}}
 \newcommand{\calL}{\mathcal{L}}
+\newcommand{\calV}{\mathcal{V}}
 
-\title{\textbf{BLINCS-128-A2}: Compact $3{,}292$-Byte Stateless Hash-Based Signatures\\
-via Constant-Sum \SWOTS{}, Capped \UPORS{} Octopus,\\
-and Exact Capped-History Security Analysis}
+\title{\textbf{BLINCS-48-X}: Sub-$4$~KiB Stateless Hash-Based Signatures for $2^{48}$ Messages\\
+via Packed Constant-Sum \WOTSC{}, Chained \UPORS{} Octopus,\\
+and Exhaustive All-Orbits Capped-History Certification}
 
 \author{
-  Signet / BLINCS Project\thanks{Pre-1.0 experimental research draft written primarily by an AI assistant at the direction of the repository owner. No independent human cryptographic audit has been performed. Companion specification, Rust reference, certified capped-history verifier (\texttt{tools/upors\_cert.rs}), and Lean~4.36.0 formalization: \url{https://github.com/jasonhadler25/blincs}; single-threaded SIMD Rust implementation (\texttt{signet}): \url{https://github.com/jasonhadler25/signet}.}
+  Signet / BLINCS Project\thanks{Pre-1.0 experimental research draft written primarily by an AI assistant at the direction of the repository owner. No independent human cryptographic review or security audit has been performed. Companion specification, Rust reference, exhaustive all-orbits certifier (\texttt{tools/upors\_cert.rs}), and Lean~4.36.0 formalization: \url{https://github.com/jasonhadler25/blincs}; single-threaded SIMD Rust implementation and \texttt{\#![no\_std]} verifier (\texttt{signet}): \url{https://github.com/jasonhadler25/signet}.}
 }
 
-\date{November 2026 \quad (Draft 0.4.0 --- Pre-1.0 Experimental)}
+\date{November 2026 \quad (Draft 0.5.0 --- Pre-1.0 Experimental)}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-We present \BLINCS{}, a $100\%$ stateless hash-based signature scheme based on \BLAKE{} and SPHINCS sized for an operational budget of $q_s \le 2^{32}$ signatures per signing key (128-bit classical single-user security target). Allowing a $128\text{ KiB}$ cached top Merkle heap ($h_{\mathrm{top}} = 12$) and targeting $\le 5.0\text{ s}$ warm $99$th-percentile signing on modern $160\text{ MHz}$ ARM Cortex-M33 hardware wallets (modeled, not measured on Cortex-M hardware), \BLINCS{} achieves fixed-length \textbf{$3{,}292$-byte signatures} ($4{,}392$~B Base64), $32$-byte verifying keys, pure $32$-byte keyed \BLAKE{} everywhere (zero XOF mode), zero static lookup tables required for verification, bounded length-framed application contexts, and \emph{two-stage single-pass salted content hashing}. On a single Apple~M6 core (\texttt{signet}, \texttt{blake3-servil-core 0.11.0}), key loading takes $31.97\text{ ms}$, warm signing takes $4.15\text{ ms}$, and zero-allocation verification takes $39.1\;\mu\text{s}$ ($2{,}276$ compressions at $m = 44, b = 1$).
+We present \BLINCS{}, a $100\%$ stateless hash-based signature scheme based on \BLAKE{} and SPHINCS sized for an operational lifetime budget of $q_s \le 2^{48}$ signatures per signing key ($2.81 \times 10^{14}$ messages; $128$-bit classical single-user security target). Pairing a $6$-layer hypertree ($13 + 7{\times}5 = 48$) of zero-coding-table bit-packed constant-sum \WOTSC{} one-time signatures ($n = 21, w = 60, z = 2, S = 679$, $u24$ counter) with a single height-$11$ \UPORS{} Octopus few-time tree ($n = 3, w = 24, S = 42, C = 376, k = 9, m_{\max} = 45$) whose codeword extraction \texttt{FEW\_CODE} is chained directly from the $32$-byte \texttt{FEW\_SELECT} digest $H_{\mathrm{sel}}$, \BLINCS{} achieves fixed-length \textbf{$3{,}990$-byte signatures} ($5{,}320$~B Base64---$49.2\%$ smaller than NIST FIPS~205 \textsf{SLH-DSA-128s}), $32$-byte verifying keys, pure $32$-byte \BLAKE{} everywhere (zero XOF mode), zero coding lookup tables, length-framed application contexts, and single-pass salted content hashing.
 
-Beyond the construction, we make three analytical and formal contributions:
-(1)~We prove that conditioning honest \UPORS{} signatures on the Octopus sibling cap $\calF = \{S \subset [1024] : |S|=10,\ \mathrm{sibs}(S) \le 44\}$ \emph{breaks negative association} and induces $16.01\times$ adjacent-sibling clustering; using an exact bivariate enumerator ($|\calF| = 256{,}172{,}225{,}164{,}499{,}838{,}464$), a certified $3$-term exponential upper envelope $u_3(t) \ge q_\calC(t)$, $320$-bit Kronecker transforms over exact $1{,}024$-state joint laws, and stratification across all $37$ sibling counts $s \in [8..44]$, we certify raw-query \UPORS{} security of \textbf{$132.13\text{ bits}$ ($99\%$ LCB)} at $q_s = 2^{32}$ (net cap effect $+2.54\text{ b}$, vs.\ $129.63\text{ b}$ exact zero-MC uncapped) and $125.48\text{ bits}$ at $2^{33}$.
-(2)~We prove a classical ROM+PRF single-user EUF-CMA reduction with explicit oracle-query accounting, paired with a Lean~4.36.0 formalization (\texttt{formal/Blincs/}, $26$ kernel-checked theorems, zero \texttt{sorry}, zero custom axioms) aligned byte-for-byte with \texttt{SPEC.md}, proving exact \texttt{sliceCount 40 24 468} cardinality via Hockey-Stick and Pascal identities, wire parser round-trip bijectivity, conditional completeness, and a provenance- and target-bound $13$-witness deterministic forgery dichotomy.
-(3)~For fair scientific exposition against NIST FIPS~205 \textsf{SLH-DSA-128s} ($7{,}856$~B, $q_s = 2^{64}$), we specify equal-budget $q_s = 2^{64}$ comparison parameterizations (\BLINCSsixfour{}, $5{,}348$~B at identical $16\text{ KiB}$ top cache; \BLINCSsixfours{}, $4{,}962$~B at $d = 7$) that isolate the $31.9$--$36.8\%$ byte savings of \SWOTS{}+\UPORS{} from budget right-sizing, while keeping all production engineering, hardening, and formalization focused on flagship \BLINCS{} ($q_s \le 2^{32}$).
+Our primary analytical contribution resolves how Octopus sibling capping affects few-time signature security: we prove that conditioning honest \UPORS{} histories on $\calF = \{S \subset [2048] : |S| = 9,\ \mathrm{sibs}(S) \le 45\}$ \emph{destroys negative association} and induces $30.35\times$ adjacent-sibling clustering, invalidating the usual marginal-product shortcut. Rather than relying on Monte Carlo sampling, we certify an all-integer $3$-term exponential upper envelope $u_3(t) \ge q_\calC(t)$ ($\forall t \ge 0$), enumerate \emph{all} $1{,}614{,}132$ isomorphism classes of $\calF$ modulo $\mathrm{Aut}(T_{11})$ (partitioning all $|\calF| = 180{,}700{,}154{,}447{,}569{,}471{,}488$ subsets), evaluate the exact binomial upper-envelope moments across every orbit in $256$-bit fractional arithmetic, and certify the final outward-rounded table in exact arbitrary-precision \texttt{BigInt} rational interval arithmetic (\texttt{tools/upors\_cert.rs}, zero floating-point reliance in the final bounds). This proves a single-raw-candidate upper-envelope bound of $P_{\mathrm{UB}}(48, 2^{48}) \le 2.2493 \times 10^{-40}$ ($\ge 131.7076\text{ bits}$). We further provide a $4$-game single-user classical ROM+PRF EUF-CMA reduction using exact query-trace accounting and an adaptive presampled marked-history coupling, a $6$-module Lean~4.36.0 formalization ($37$ theorems verified against a strict core-axiom allowlist), and cross-architecture evaluation across single-core Apple~M6 SIMD ($8.45\text{ ms}$ warm sign, $62.7\;\mu\text{s}$ verify, $27.1\text{ KiB}$ zero-import WASM) and bare-metal QEMU ARM Cortex-M33 emulation ($1{,}816\times$ fewer \WOTSC{} decoding instructions and $988\text{ B}$ verification stack watermark vs.\ zero-table Sperner DP).
 \end{abstract}
 
 \section{Introduction}
 \label{sec:intro}
 
-Stateless hash-based signatures~\cite{bernstein2015sphincs,bernstein2019sphincsplus,nist2024fips205} rely exclusively on symmetric hash assumptions, avoiding both elliptic-curve and lattice assumptions as well as the catastrophic backup-rollback risks of stateful schemes~\cite{buchmann2011xmss,shrincs2025}. Their primary practical obstacle is signature size: NIST FIPS~205 \textsf{SLH-DSA-128s} requires $7{,}856$~bytes ($10{,}476$~B Base64), while \textsf{SLH-DSA-128f} requires $17{,}088$~bytes.
+Stateless hash-based signatures~\cite{bernstein2015sphincs,bernstein2019sphincsplus,nist2024fips205} base unforgeability solely on symmetric hash assumptions, avoiding elliptic-curve and lattice assumptions as well as the state-rollback hazards of stateful schemes~\cite{buchmann2011xmss,shrincs2025}. Their primary deployment cost has been signature size and signing latency: NIST FIPS~205 \textsf{SLH-DSA-128s} produces $7{,}856$-byte signatures ($10{,}476$~B Base64), while \textsf{SLH-DSA-128f} requires $17{,}088$~bytes.
 
-\BLINCS{} is an experimental stateless hash-based signature suite based on \BLAKE{}~\cite{oconnor2020blake3} and SPHINCS targeting an operational budget of $q_s \le 2^{32}$ signatures per signing key (over $4.29 \times 10^9$ signatures: ten per second nonstop for $13.6$~years) at a \emph{128-bit classical single-user security target} (multi-user security and QROM lifting are explicitly open; see \cref{sec:quantum}). Allowing a $128\text{ KiB}$ cached top Merkle heap ($h_{\mathrm{top}} = 12$) and targeting $\le 5.0\text{ s}$ warm $99$th-percentile signing on modern $160\text{ MHz}$ ARM Cortex-M33 devices (modeled only; no Cortex-M hardware has been measured), \BLINCS{} achieves fixed-length \textbf{$3{,}292$-byte signatures} ($4{,}392$~B Base64).
+For network services, software supply chains, and long-lived infrastructure, an operational signing budget must also be large enough to resist inadvertent signing-oracle exhaustion (``milking''). \BLINCS{} targets $q_s \le 2^{48}$ signatures per signing key ($281.5$~trillion signatures: one million per second nonstop for $8.9$~years) at a \emph{128-bit classical single-user security target} (multi-user and QROM proofs are explicitly open; see \cref{sec:quantum}).
 
-\paragraph{Summary of contributions.}
-\begin{enumerate}[leftmargin=1.4em,itemsep=3pt]
-  \item \textbf{Joint construction (\SWOTS{} + \UPORS{} Octopus, \cref{sec:construction}):}
-    A $4$-layer $12{+}7{+}7{+}7$ hypertree ($h = 33$) pairing constant-sum Sperner \SWOTS{} ($n = 24, w = 40, S = 468$, deterministic $u16$ counter enforcing $z = 8$ leading zero bits) with a single height-$10$ \UPORS{} Octopus tree ($n = 3, w = 24, S = 42, C = 376, k = 10, m_{\max} = 44$) whose leaves fit in one $64$-byte \BLAKE{} block, whose unrankers need \textbf{$0$~B of static lookup tables}, and whose extraction uses pure $32$-byte keyed \BLAKE{} blocks (zero XOF mode).
-  \item \textbf{Exact capped-history \UPORS{} security analysis (\cref{sec:upors-security}):}
-    We show that enforcing $\mathrm{sibs}(S) \le 44$ on honest signatures breaks negative association~\cite{joagdev1983na} and creates $16.01\times$ sibling co-occurrence, invalidating naive uncapped factorizations and uncapped-signer importance sampling. We resolve this via exact integer enumeration of $\calF$, a certified $3$-term exponential upper envelope $u_3(t) \ge q_\calC(t)$, $320$-bit Kronecker transforms over exact $1{,}024$-entry joint laws $p_{S^*}(A)$, and stratification across all $37$ sibling strata $s \in [8..44]$ (\texttt{tools/upors\_cert.rs}), certifying $132.13\text{ b}$ ($99\%$ LCB) raw-query security at $q_s = 2^{32}$ and $125.48\text{ b}$ at $2^{33}$.
-  \item \textbf{Single-user ROM+PRF reduction \& two-stage salted streaming (\cref{sec:security}):}
-    We give a single-user classical ROM+PRF EUF-CMA proof with explicit oracle-query accounting, exact chosen-message salt timing, and known-salt degradation analysis, dropping the informal multi-target SPR lifting of earlier drafts.
-  \item \textbf{Spec-exact Lean~4.36.0 formalization (\cref{sec:lean}):}
-    All six Lean~4 modules match \texttt{SPEC.md} byte-for-byte ($26$ kernel-checked theorems, zero \texttt{sorry}, zero custom axioms), including a direct Hockey-Stick/Pascal proof of \texttt{sliceCount 40 24 468}, total wire parser round-trip bijectivity, and a provenance- and target-bound $13$-witness forgery dichotomy.
-  \item \textbf{Equal-budget $q_s = 2^{64}$ ablation \& single-threaded measurements (\cref{sec:comparison}):}
-    We introduce \BLINCSsixfour{} ($5{,}348$~B, $16\text{ KiB}$ top cache) and \BLINCSsixfours{} ($4{,}962$~B, $d = 7$) strictly as $q_s = 2^{64}$ scientific comparison baselines against \textsf{SLH-DSA-128s} ($7{,}856$~B), isolating algorithmic savings ($-31.9\%$ to $-36.8\%$) from budget right-sizing, alongside reproducible Apple~M6 measurements and an auditable Cortex-M33 model.
+\paragraph{Positioning and novelty.}
+Constant-sum one-time signatures~\cite{bos1992csum,kudinov2022wotsplusc,zhang2023csum,khovratovich2025hypercube}, Octopus multi-proofs~\cite{aumasson2017gravity}, and forced-pruning few-time signatures (\textsf{PORS+FP}~\cite{abri2025porsfp}, \textsf{BPORS+FP}~\cite{ren2026bporsfp}, \textsf{BPORSC}~\cite{wang2026bporsc}) are each well-studied individually. What distinguishes \BLINCS{} is the combination of three concrete technical contributions:
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt]
+  \item \textbf{Zero-coding-table packed \WOTSC{} + chained \UPORS{} Octopus (\cref{sec:construction}):}
+    A $6$-layer $13{+}7{\times}5$ hypertree ($h = 48$) using an exact $2 + 21 \cdot 6 = 128$-bit packed constant-sum slice $\calL_{679}(21, 60)$ (zero division, zero coding lookup tables, $< 1\text{ KiB}$ embedded stack) paired with a height-$11$ \UPORS{} tree of $3$-chain single-block ($64$-byte) leaves whose \texttt{FEW\_CODE} derivation is chained directly from the $32$-byte \texttt{FEW\_SELECT} digest $H_{\mathrm{sel}}$, forcing any code-first pre-query for a selection candidate to guess $H_{\mathrm{sel}}$ at zero cost while achieving fixed-length \textbf{$3{,}990$-byte signatures}.
+  \item \textbf{Deterministic all-orbits rational-interval certification (\cref{sec:upors-security}):}
+    Forced-pruning analyses such as \textsf{PORS+FP}~\cite{abri2025porsfp}, \textsf{BPORS+FP}~\cite{ren2026bporsfp}, and \textsf{BPORSC}~\cite{wang2026bporsc} analyze subset-pruned or bucket-thinned histories whose conditioning differs from full-tree Octopus sibling capping over chain-valued openings. We prove that conditioning honest histories on $\calF = \{S \subset [2048] : |S| = 9,\ \mathrm{sibs}(S) \le 45\}$ destroys negative association~\cite{joagdev1983na} ($30.35\times$ adjacent-sibling clustering), and evaluate a deterministic upper-envelope bound \emph{without Monte Carlo} by certifying an all-integer $3$-term exponential upper envelope $u_3(t) \ge q_\calC(t)$, summing across all $1{,}614{,}132$ $\mathrm{Aut}(T_{11})$-orbits in $256$-bit fractional arithmetic, and verifying the final binomial table in exact \texttt{BigInt} rational interval arithmetic (\texttt{tools/upors\_cert.rs}).
+  \item \textbf{Game-based ROM+PRF proof, Lean~4 formalization, and cross-architecture co-design (\cref{sec:security,sec:lean,sec:codesign,sec:comparison}):}
+    We give a $4$-game single-user classical ROM+PRF reduction with exact $|V|$ accepted-digest collision accounting, query-trace hidden-node charging, and an adaptive presampled marked-history coupling; connect it to a $6$-module Lean~4.36.0 formalization ($37$ strict-allowlist axiom checks, normative bounded minimum-counter signer exporting all $6$ layer minimalities, and exact Octopus sibling conservation); and report Apple~M6 benchmarks alongside auditable QEMU Cortex-M33 instruction/stack measurements and byte-only projections at $q_s = 2^{64}$.
 \end{enumerate}
 
-\section{Preliminaries, Primitive, and Notation}
+\section{Primitive, Tweaks, and Single-Block Alignment}
 \label{sec:prelim}
 
-\subsection{\BLAKE{} Modes and Single-Block Hot-Path Alignment}
-\BLINCS{} invokes only two standard $32$-byte-output \BLAKE{} modes~\cite{oconnor2020blake3} and \emph{never} invokes \BLAKE{}'s extended-output (XOF) mode:
+\BLINCS{} uses only two standard $32$-byte-output \BLAKE{} modes~\cite{oconnor2020blake3} and \emph{never} invokes \BLAKE{}'s extended-output (XOF) mode:
 \begin{itemize}[leftmargin=1.4em,itemsep=2pt]
   \item $\Keyed(K, X) \in \bits^{256}$: \BLAKE{} \texttt{KEYED\_HASH} with $32$-byte key $K$.
-  \item $\Derive(\mathsf{ctx}, X) \in \bits^{256}$: \BLAKE{} \texttt{DERIVE\_KEY} with UTF-8 context string $\mathsf{ctx}$ (computing a context-key block once per fixed context string, plus one compression per $64$-byte input block of $X$; for fixed suite contexts, implementations may cache the derived context key).
+  \item $\Derive(\mathsf{ctx}, X) \in \bits^{256}$: \BLAKE{} \texttt{DERIVE\_KEY} with UTF-8 context string $\mathsf{ctx}$.
 \end{itemize}
-Six pairwise-distinct suite-bound key-derivation contexts derive $K_{\mathrm{sec}}$, $K_{\mathrm{salt}}$, $K_R$, $\mathsf{pk\_seed}$, $K_{\mathrm{pub}}$, and $K_{\mathrm{content}}$ from a $32$-byte secret $\mathsf{seed}$, giving verifying key $\mathsf{SignetId} = \mathsf{pk\_seed} \parallel \mathsf{root}$ ($32$~B).
+From a $32$-byte secret $\mathsf{seed}$, \emph{four} secret-seed derivations produce $K_{\mathrm{sec}}$, $K_{\mathrm{salt}}$, $K_R \in \bits^{256}$ and $\mathsf{pk\_seed} \in \bits^{128}$ (truncated from $32$~B) using four distinct suite-bound contexts (\texttt{"BLINCS-48-X 2026-11-26 ..."}). From the public verifying key $\mathsf{SignetId} = \mathsf{pk\_seed} \parallel \mathsf{root}$ ($32$~B), \emph{two} public derivations produce $K_{\mathrm{pub}} = \Derive(\mathsf{CTX\_PUB}, \mathsf{pk\_seed})$ and $K_{\mathrm{content}} = \Derive(\mathsf{CTX\_CONTENT}, \mathsf{pk\_seed} \parallel \mathsf{root})$.
 
-Every tree, chain, counter-grinding, and message-binding hash is domain-separated by an explicit $16$-byte tweak:
+Every tree, chain, counter-grinding, and message-binding call is domain-separated by a $16$-byte tweak:
 \[
   \Tweak(\mathsf{kind}, \ell, \mathsf{tree}, \mathsf{leaf}, a, b)
   \;=\;
   \mathsf{kind}\;(1) \parallel \ell\;(1) \parallel \mathsf{tree}\;(6) \parallel \mathsf{leaf}\;(2) \parallel a\;(2) \parallel b\;(4),
 \]
-with all multi-byte integers little-endian and unused fields zero. Hypertree layers use $\ell \in \{0,1,2,3\}$; the single \UPORS{} tree uses $\ell = \mathtt{0x80}$ ($128$). Define $\ShortHash(K, T, X) = \Keyed(K, T \parallel X)[0..16]$. Eight distinct tweak kinds partition all hash calls (\cref{fig:tweak}): every hot-path keyed call---\texttt{CHAIN\_SECRET} ($16$~B), \texttt{CHAIN} ($32$~B), \texttt{ONE\_TIME\_MSG} ($36$~B), \texttt{NODE} ($48$~B), \texttt{FEW\_SELECT} ($52$~B), \texttt{FEW\_CODE} ($52$~B), and \UPORS{} \texttt{ONE\_TIME\_KEY} ($64$~B)---fits inside a \emph{single} $64$-byte \BLAKE{} compression block, and all three counter-indexed sweeps place their incrementing $u32$ counter on a $4$-byte word boundary.
+with little-endian integers and zero unused fields. Hypertree layers use $\ell \in \{0,\dots,5\}$; the \UPORS{} tree uses $\ell = \mathtt{0x80}$ ($128$). Define $\ShortHash(K, T, X) = \Keyed(K, T \parallel X)[0..16]$ (half-open byte ranges $a..b$ denote $[a, b)$ throughout). Eight distinct tweak kinds partition all hash calls (\cref{fig:tweak}): all seven hot-path calls fit inside a \emph{single} $64$-byte \BLAKE{} compression block, and every counter-grinding loop places its incrementing $u32$ counter on a $4$-byte word boundary.
 
 \begin{figure}[t]
 \centering
 \footnotesize
 \setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}rllp{3.55cm}p{4.15cm}r@{}}
+\begin{tabular}{@{}rllp{3.45cm}p{4.25cm}r@{}}
 \toprule
 Tag & Name & Key & Tweak $(\ell, \mathsf{tree}, \mathsf{leaf}, a, b)$ & Appended data & Total B \\
 \midrule
 1 & \texttt{CHAIN\_SECRET} & $K_{\mathrm{sec}}$ & $(\ell, \mathsf{tree}, 0, 0, \mathsf{leaf}\!\cdot\!n_c{+}c)$ & (empty) & $16$ \\
 2 & \texttt{CHAIN} & $K_{\mathrm{pub}}$ & $(\ell, \mathsf{tree}, \mathsf{leaf}, c, s)$ & $x_s$ ($16$~B) & $32$ \\
-3 & \texttt{ONE\_TIME\_KEY} & $K_{\mathrm{pub}}$ & $(\ell, \mathsf{tree}, \mathsf{leaf}, 0, 0)$ & $24{\times}16$ (HT) / $3{\times}16$ (\UPORS{}) & $400$/$64$ \\
+3 & \texttt{ONE\_TIME\_KEY} & $K_{\mathrm{pub}}$ & $(\ell, \mathsf{tree}, \mathsf{leaf}, 0, 0)$ & $21{\times}16$ (HT) / $3{\times}16$ (\UPORS{}) & $352$/$64$ \\
 4 & \texttt{NODE} & $K_{\mathrm{pub}}$ & $(\ell, \mathsf{tree}, 0, \mathsf{lvl}, p)$ & $L \parallel R$ ($32$~B) & $48$ \\
 5 & \texttt{ONE\_TIME\_MSG} & $K_{\mathrm{pub}}$ & $(\ell, \mathsf{tree}, \mathsf{leaf}, 0, 0)$ & $\mathsf{node}\;(16) \parallel \mathrm{u32\_le}(\mathrm{ctr}_\ell)$ & $36$ \\
 6 & \texttt{MESSAGE} & $K_{\mathrm{pub}}$ & $(0, 0, 0, 0, 0)$ & $R \parallel \mathsf{root} \parallel \mathsf{short} \parallel \mathsf{framed\_ctx}$ & $97..352$ \\
 7 & \texttt{FEW\_SELECT} & $K_{\mathrm{pub}}$ & $(\mathtt{0x80}, 0, 0, 0, 0)$ & $D_{\mathrm{seed}}\;(32) \parallel \mathrm{u32\_le}(\mathrm{ctr}_{\mathrm{ft}})$ & $52$ \\
-8 & \texttt{FEW\_CODE} & $K_{\mathrm{pub}}$ & $(\mathtt{0x80}, 0, 0, \mathsf{blk}, 0)$ & $D_{\mathrm{seed}}\;(32) \parallel \mathrm{u32\_le}(\mathrm{ctr}_{\mathrm{ft}})$ & $52$ \\
+8 & \texttt{FEW\_CODE} & $K_{\mathrm{pub}}$ & $(\mathtt{0x80}, 0, 0, \mathsf{blk}, 0)$ & $H_{\mathrm{sel}}\;(32)$ & $48$ \\
 \bottomrule
 \end{tabular}
-\caption{Exact normative tweak and input layout of \BLINCS{} (\texttt{SPEC.md §5}). All tags, namespaces ($\ell \in \{0..3\}$ vs.\ $\mathtt{0x80}$), and counter indices fit without wrap; all seven hot-path calls (all rows except \texttt{MESSAGE} and HT \texttt{ONE\_TIME\_KEY}) fit in one $64$-byte \BLAKE{} compression block.}
+\caption{Normative tweak and input layout of \BLINCS{} (\texttt{SPEC.md §5}). All tags, namespaces ($\ell \in \{0..5\}$ vs.\ $\mathtt{0x80}$), and runtime coordinates fit without modular wrap (\texttt{encodeTweak\_injective}, \texttt{tweak\_fields\_no\_wrap}); all seven hot-path calls except \texttt{MESSAGE} and HT \texttt{ONE\_TIME\_KEY} fit in one $64$-byte \BLAKE{} compression block.}
 \label{fig:tweak}
 \end{figure}
 
-\subsection{Terminology and Notation}
-We distinguish the $16$-byte per-imprint randomizer $R$ from the binomial occupancy count $R_{\mathrm{occ}} \sim \mathrm{Bin}(q_s, 2^{-h})$ at a hypertree leaf address; $H_{\mathrm{sel}}$ denotes the raw $32$-byte \texttt{FEW\_SELECT} digest, distinct from the separate indexed \texttt{FEW\_CODE} blocks. In our companion library \texttt{signet}, a signing key is called a \texttt{Signet}, its $32$-byte verifying key a \texttt{SignetId}, and a signature an \texttt{Imprint}; this paper uses standard cryptographic terminology alongside those identifiers.
+\paragraph{Terminology.}
+We distinguish the $16$-byte per-signature randomizer $R$ from the binomial leaf occupancy count $R_{\mathrm{occ}} \sim \mathrm{Bin}(q_s, 2^{-48})$ at a hypertree leaf address; $H_{\mathrm{sel}}$ denotes the $32$-byte \texttt{FEW\_SELECT} digest and $H_\ell \in \bits^{128}$ denotes the $16$-byte truncated \texttt{ONE\_TIME\_MSG} prefix. In our companion library \texttt{signet}, a signing key is a \texttt{Signet}, its $32$-byte verifying key a \texttt{SignetId}, and a signature an \texttt{Imprint}.
 
-\section{Design-Space Exploration and the \BLINCS{} Construction}
+\section{The \BLINCS{} Construction}
 \label{sec:construction}
 
-\subsection{Structured Design-Space Exploration}
-In the Bleichenbacher--Maurer DAG model of hash-chain one-time signatures~\cite{bleichenbacher1996ots} and constant-sum chain-product antichains~\cite{bos1992csum,zhang2023csum}, minimizing signature bytes for a fixed signing work budget balances four coupled levers: hypertree depth $d$ (fewer layers save $386$~B per layer at exponentially higher per-subtree work), top-tree cache size $h_{\mathrm{top}}$ (caching a height-$12$ top tree costs $128\text{ KiB}$ of RAM/Flash and removes $4{,}096$ leaves from warm signing), OTS counter grinding $z$, and few-time tree merging via Octopus~\cite{aumasson2017gravity,abri2025porsfp}.
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=1.5pt, minimum height=0.82cm, font=\scriptsize\sffamily, align=center, inner sep=3pt}
+]
+  \node[box, fill=gray!12, minimum width=1.15cm] (e) {$e$\\$16$~B};
+  \node[box, fill=gray!12, minimum width=1.15cm, right=0pt of e] (r) {$R$\\$16$~B};
+  \node[box, fill=blue!10, minimum width=3.55cm, right=0pt of r] (up) {\UPORS{} ($A{=}11,k{=}9,m{\le}45$)\\$\mathrm{ctr}_{\mathrm{ft}}(4) \parallel 27{\times}16 \parallel 45{\times}16 = 1{,}156$~B};
+  \node[box, fill=green!10, minimum width=3.85cm, right=0pt of up] (low) {$5\times$ Low \WOTSC{} ($h{=}7$)\\$5 \times (3{+}336{+}112) = 2{,}255$~B};
+  \node[box, fill=orange!12, minimum width=2.75cm, right=0pt of low] (top) {Top \WOTSC{} ($h{=}13$)\\$3{+}336{+}208 = 547$~B};
 
-Our earlier zero-cache draft (\textsf{BLINCS-128-7x5}, $6{,}432$~B, $1\text{ KiB}$ top tree, $7 \times 5$ \textsf{WOTS+} + \textsf{U-FORS}) targeted an uncached $60\text{ MHz}$ Ledger \textsf{ST33} budget ($\le 200\text{k}$ compressions). Re-targeting modern $160\text{ MHz}$ Cortex-M33 devices with a $128\text{ KiB}$ cached top tree raises the warm signing budget to $\approx 450\text{k}$ compressions, enabling $d = 4$ ($12{+}7{+}7{+}7$) and cutting signature size in half to $3{,}292$~B. Within our explored family of single-OTS-type stateless \BLAKE{} schemes at $q_s = 2^{32}$, $128\text{ KiB}$ top tree, and $\le 460\text{k}$ warm compressions, \BLINCS{} sits near the minimum size that clears $128$~bits cleanly without tight-cap tail blowup (whereas tighter-cap candidates trade tail jitter or rely heavily on cap credit).
+  \draw[decorate, decoration={brace, amplitude=4pt, mirror}]
+    ([yshift=-3pt]e.south west) -- ([yshift=-3pt]top.south east)
+    node[midway, below=5pt, font=\footnotesize] {Fixed-length wire signature (\texttt{Imprint}): $32 + 1{,}156 + 2{,}255 + 547 = \mathbf{3{,}990\text{ bytes}}$ ($5{,}320$~B Base64)};
+\end{tikzpicture}
+\caption{Fixed-length wire format of \BLINCS{}. Every layer uses the identical \WOTSC{}$(21,60,2,679)$ primitive; \UPORS{} pads unused Octopus slots ($m < 45$) with canonical trailing zeros checked in constant time.}
+\label{fig:wire}
+\end{figure}
 
-\subsection{\SWOTS{}: Constant-Sum Sperner Unranking with $z = 8$ Grinding}
-For $n = 24$, $w = 40$ (steps $0..39$), consider the exact middle constant-sum slice $\calL_{468}(24, 40) = \{\mathbf{d} \in \{0,\dots,39\}^{24} : \sum_i d_i = 468\}$. Because every vector in $\calL_{468}(24, 40)$ has equal coordinate sum, $\calL_{468}(24, 40)$ is a strict antichain in the chain-product poset $\{0,\dots,39\}^{24}$ (which is Sperner by de~Bruijn--van~Ebbenhorst~Tengbergen--Kruyswijk~\cite{debruijn1951sperner}; note that for dominance only the antichain property is needed, not maximality).
+\subsection{Packed Constant-Sum \WOTSC{} with Shifted Upper-Half Slice}
+\label{sec:wotsc}
+To eliminate checksum chains without incurring the dynamic-programming cost of Sperner unranking~\cite{zhang2023csum,khovratovich2025hypercube} on microcontrollers, \BLINCS{} instantiates \WOTSC{}~\cite{kudinov2022wotsplusc} via direct $6$-bit packing with $n = 21$ chains, alphabet size $w = 60$ ($\mathsf{WOTS\_STEPS} = 59$, digits $d_i \in \{0,\dots,59\}$), $z = 2$ zero bits, and shifted upper-half constant sum $S = 679$ (above the midpoint $\lfloor 21 \cdot 59 / 2 \rfloor = 619$).
 
-\begin{proposition}[Exact \SWOTS{} Cardinality and Minimality of $w = 40$]
-\label{prop:sperner}
-Let $N(w, n, s) = |\calL_s(n, w)|$. By inclusion--exclusion over the $n$ upper bounds $d_i < w$ (proved directly on the recursive definition \texttt{sliceCount} in Lean~4, \texttt{sliceCount\_eq\_spernerIE}),
-\[
-  N(40, 24, 468) = 1{,}973{,}221{,}677{,}906{,}098{,}493{,}567{,}206{,}234{,}001{,}571{,}000 > 2^{120},
-\]
-whereas $N(39, 24, 456) = 1{,}102{,}272{,}360{,}296{,}506{,}971{,}467{,}046{,}668{,}212{,}509{,}411 < 2^{120}$. Thus $w = 40$ is the exact integer minimum for injecting $120$-bit ranks into $\calL_{S_{\mathrm{mid}}}(24, w)$.
+For a $16$-byte truncated digest $H_\ell \in \bits^{128}$, let $\mathsf{lo} = \mathrm{LE128}(H_\ell) \in [0, 2^{128})$. Because $z + 6n = 2 + 21 \cdot 6 = 128$ bits exactly, every bit of $H_\ell$ is used with zero discarded prefix entropy: $H_\ell$ is \emph{valid} ($H_\ell \in \calV_{\mathrm{wots}}$) if and only if
+\begin{equation}
+\label{eq:wotsc-valid}
+  (\mathsf{lo} \bmod 4) = 0,
+  \qquad
+  d_i = \Big\lfloor \frac{\mathsf{lo}}{2^{2 + 6i}} \Big\rfloor \bmod 64 < 60 \quad (\forall i \in \{0,\dots,20\}),
+  \qquad
+  \sum_{i=0}^{20} d_i = 679.
+\end{equation}
+Condition \eqref{eq:wotsc-valid} uses only shifts, bitmasks, and integer additions---zero division, zero $128$-bit DP, and zero lookup tables. Moreover, $H_\ell \mapsto (d_0, \dots, d_{20})$ is a \emph{bijection} from $\calV_{\mathrm{wots}} \subset \bits^{128}$ onto the constant-sum antichain $\calL_{679}(21, 60) = \{\mathbf{d} \in \{0,\dots,59\}^{21} : \sum_i d_i = 679\}$, with explicit inverse $\mathbf{d} \mapsto \mathrm{LE128}^{-1}(4 \sum_{i=0}^{20} d_i 64^i)$ (both directions kernel-checked in Lean~4: \texttt{validWotsHash\_\allowbreak eq\_\allowbreak of\_\allowbreak digits\_\allowbreak eq}, \texttt{encodeWotsCDigits\_\allowbreak valid}, \texttt{wotsCDigit\_\allowbreak encodeWotsCDigits}, \texttt{encodeWotsCDigits\_\allowbreak wotsCDigit}, and \texttt{wotsC\_\allowbreak dominance}).
+
+\begin{proposition}[Exact \WOTSC{} Cardinality, Verification Savings, and Exhaustion Margin]
+\label{prop:wotsc}
+Let $N(w, n, s) = |\calL_s(n, w)| = [x^s](1 + \cdots + x^{w-1})^n$. By inclusion--exclusion over $d_i < w$ (proved directly on \texttt{sliceCount} in Lean~4, \texttt{wots\_\allowbreak sperner\_\allowbreak cardinality}),
+\begin{align*}
+  |\calV_{\mathrm{wots}}| \;=\; N(60, 21, 679)
+  &\;=\; \sum_{j=0}^{11} (-1)^j \binom{21}{j}\binom{699 - 60j}{20} \\
+  &\;=\; 83{,}261{,}328{,}062{,}314{,}682{,}436{,}358{,}950{,}675{,}433{,}803 \;\approx\; 2^{116.0032},
+\end{align*}
+whereas $N(60, 21, 680) < 2^{116}$ and $N(59, 21, 609) < 2^{116}$ (adjacent capacity checks at fixed $n = 21$ and target capacity $2^{116}$). Hence:
+\begin{enumerate}[leftmargin=1.4em,itemsep=1pt]
+  \item A uniform $16$-byte prefix $H_\ell$ passes \eqref{eq:wotsc-valid} with exact probability $p_{\mathrm{wots}} = |\calV_{\mathrm{wots}}| / 2^{128} \approx 1 / 4{,}086.920$.
+  \item For a fixed node and physical address, a $3$-byte counter $\mathrm{ctr}_\ell \in [0, 2^{24})$ ($u24$ LE on the wire, zero-extended to $u32$ word $8$ of the $36$-byte \texttt{ONE\_TIME\_MSG} block) exhausts with probability $(1 - p_{\mathrm{wots}})^{2^{24}} < 2^{-5{,}923.1}$.
+  \item Shifting $S$ from midpoint $619$ to $679$ cuts verification chain work from $620$ to an \emph{exact constant} $21 \cdot 59 - 679 = \mathbf{560}$ steps per layer (saving $360$ verify compressions across $6$ layers while keeping fixed-target matching probability at $2^{-128}$ per raw query and adding $+0.40$ bits of grinding).
+\end{enumerate}
 \end{proposition}
 
-At hypertree position $(\ell, \mathsf{tree}, \mathsf{leaf})$ signing child root $\mathsf{node} \in \bits^{128}$, the deterministic signer finds the \emph{smallest} $\mathrm{ctr}_\ell \in \{0,\dots,65535\}$ ($u16$) such that
+At hypertree position $(\ell, \mathsf{tree}, \mathsf{leaf})$ signing child root $\mathsf{node} \in \bits^{128}$, the deterministic signer selects the \emph{smallest} $\mathrm{ctr}_\ell \in [0, 2^{24})$ such that
 \[
-  H_\ell = \ShortHash(K_{\mathrm{pub}}, \Tweak(\mathtt{ONE\_TIME\_MSG}, \ell, \mathsf{tree}, \mathsf{leaf}, 0, 0),\, \mathsf{node} \parallel \mathrm{u32\_le}(\mathrm{ctr}_\ell))
+  H_\ell = \ShortHash\big(K_{\mathrm{pub}},\, \Tweak(\mathtt{ONE\_TIME\_MSG}, \ell, \mathsf{tree}, \mathsf{leaf}, 0, 0),\, \mathsf{node} \parallel \mathrm{u32\_le}(\mathrm{ctr}_\ell)\big) \in \calV_{\mathrm{wots}},
 \]
-satisfies $H_\ell[0] = 0$ ($z = 8$ leading zero bits), failing closed without wrapping if all $2^{16}$ values fail (exhaustion probability $(255/256)^{65536} \approx 2^{-370}$ per root in the ideal model). The $15$ trailing bytes $H_\ell[1..16]$ define a $120$-bit rank injected into the first $2^{120}$ lexicographic tuples of $\calL_{468}(24, 40)$.
+failing closed without wrapping if all $2^{24}$ values fail. Deterministic minimality ensures that any physical hypertree key signs its unique child root with a unique digit vector across the lifetime of the key (while verification accepts any valid counter). Each \WOTSC{} leaf verifying-key hash takes $16 + 21 \cdot 16 = 352$~bytes ($6$ \BLAKE{} blocks), and the $6$ hypertree layers have heights $13 + 7 + 7 + 7 + 7 + 7 = 48$ ($h_{\mathrm{top}} = 13$ gives $8{,}192$ top leaves; all five lower layers have uniform height $7$, $128$ leaves each).
 
-\paragraph{Effective domain and counter choices.}
-Because only the first $2^{120}$ ranks are used alongside $H_\ell[0] = 0$, the effective output domain is exactly $2^{128}$ (the unused $0.570$ bits of $\log_2 N(40, 24, 468) \approx 120.570$ add no collision resistance). For a fixed honest target digest at a fixed address, a fresh raw trial matches with probability $2^{-128}$ (or $2^{-120}$ conditioned on $H_\ell[0] = 0$); testing all $2^{16}$ counters on one other fixed child root hits with probability $\approx 2^{-112}$ at cost $2^{16}$ hashes (unchanged work per hit). Deterministic reuse of the \emph{smallest} valid counter at each physical address $(\ell, \mathsf{tree}, \mathsf{leaf})$ is essential so that signing the same honest child root never leaks two distinct digit vectors. Choosing $z = 8$ over $z = 10$ avoids $z = 10$'s $(1023/1024)^{65536} \approx 2^{-92.4}$ $u16$ overflow hazard across $2^{32}$ signatures while costing only $\approx 256$ hashes per layer ($< 0.3\%$ of signing work). Every layer executes an exact constant $24 \cdot 39 - 468 = 468$ verification chain steps, and stand-alone verifiers unrank $\calL_{468}(24, 40)$ via exact $O(S)$ boxcar deconvolution in $7.5\text{ KiB}$ of stack RAM with \textbf{$0$~B of static lookup tables}.
+\subsection{\UPORS{}: Single Height-$11$ Upper-Slice Octopus Tree with Chained \texttt{FEW\_CODE}}
+\label{sec:upors}
+At each of the $2^{48}$ hypertree addresses $\mathsf{leaf\_addr} \in [0, 2^{48})$, the few-time layer is a single binary Merkle tree of height $A = 11$ ($L = 2{,}048$ leaves). Each leaf holds $n = 3$ chains of $23$ steps ($w = 24$), so $\Tweak(\mathtt{ONE\_TIME\_KEY}) \parallel x_{23}^{(0)} \parallel x_{23}^{(1)} \parallel x_{23}^{(2)}$ is $16 + 48 = 64$~bytes (exact $1$ \BLAKE{} block). Codewords lie on the upper constant-sum slice $\calC = \calL_{42}(3, 24) = \{(a,b,c) \in \{0,\dots,23\}^3 : a+b+c = 42\}$ of cardinality $|\calC| = \binom{44}{2} - 3\binom{20}{2} = 376$ (Lean~4: \texttt{upors\_slice\_count}, \texttt{uporsCode\_antichain}). Every opened leaf requires a constant $3 \cdot 23 - 42 = 27$ verify steps, and lexicographic unranking over $\calL_{42}(3, 24)$ is a $24$-row bounded integer scan with row lengths $5, 6, \dots, 24, 23, 22, 21, 20$ requiring \textbf{$0$~B of static tables}.
 
-\subsection{\UPORS{}: Single Height-$10$ Upper-Slice Octopus Tree}
-The few-time layer at address $\mathsf{leaf\_addr} \in [2^{33}]$ is a single binary Merkle tree of height $A = 10$ ($L = 1{,}024$ leaves). Each leaf holds $n = 3$ chains of $23$ steps ($w = 24$), so its leaf hash input $\Tweak(\mathtt{ONE\_TIME\_KEY}) \parallel x_{23}^{(0)} \parallel x_{23}^{(1)} \parallel x_{23}^{(2)}$ is $16 + 48 = 64$~bytes (one \BLAKE{} compression block). Codewords lie on the upper constant-sum slice $\calC = \calL_{42}(3, 24) = \{(a,b,c) \in \{0,\dots,23\}^3 : a+b+c = 42\}$ of exact cardinality $|\calC| = 376$ (kernel-checked in Lean~4: \texttt{upors\_slice\_count}, \texttt{uporsCode\_antichain}). Every opened leaf requires an exact constant $3 \cdot 23 - 42 = 27$ verify steps, and $\calL_{42}(3, 24)$'s hexagonal cross-section admits a $10$-line closed-form arithmetic unranker requiring \textbf{$0$~B of static lookup tables}.
-
-\paragraph{Selection, Octopus cap, and unbiased indexed codeword extraction.}
 Given $D_{\mathrm{seed}} \in \bits^{256}$ (\cref{sec:content-hash}):
 \begin{enumerate}[leftmargin=1.4em,itemsep=2pt]
-  \item \textbf{\texttt{FEW\_SELECT} (\texttt{SPEC.md §8.1}):} For $\mathrm{ctr}_{\mathrm{ft}} \in \{0,\dots,2^{32}-1\}$, compute
+  \item \textbf{\texttt{FEW\_SELECT} (\texttt{SPEC.md §8.1}):} For $\mathrm{ctr}_{\mathrm{ft}} \in [0, 2^{32})$, compute
     \[
       H_{\mathrm{sel}} \;=\; \Keyed\!\big(K_{\mathrm{pub}},\, \Tweak(\mathtt{FEW\_SELECT}, \mathtt{0x80}, 0,0,0,0) \parallel D_{\mathrm{seed}} \parallel \mathrm{u32\_le}(\mathrm{ctr}_{\mathrm{ft}})\big).
     \]
-    Scan up to $22$ consecutive $10$-bit chunks starting at bit $0$ (bits $0..220$) to collect the first $k = 10$ distinct leaves in $[1024]$, sort ascending, and compute the exact Octopus sibling count $m = \mathrm{sibs}(S)$. Reject if fewer than $10$ distinct leaves appear (probability $\approx 2^{-49}$ in $22$ draws) or if $m > m_{\max} = 44$. Extract the $33$-bit hypertree address $\mathsf{leaf\_addr}$ from bits $220..253$ (disjoint from bits $0..220$). The deterministic signer picks the smallest valid $\mathrm{ctr}_{\mathrm{ft}}$ (failing closed if $u32$ exhausts); the verifier checks only the encoded $\mathrm{ctr}_{\mathrm{ft}}$.
-  \item \textbf{\texttt{FEW\_CODE} (\texttt{SPEC.md §8.2}):} Using indexed blocks $\mathsf{blk} \in \{0, \dots, 65535\}$ ($u16$), compute
+    Scan up to $18$ consecutive $11$-bit chunks starting at bit $0$ (bits $0..198$) to collect the first $k = 9$ distinct leaves in $[0, 2048)$, sort ascending to $S$, and compute the Octopus~\cite{aumasson2017gravity} sibling count $m = \mathrm{sibs}(S)$. Reject if fewer than $9$ distinct leaves appear (exact failure probability $1 - \alpha = 2048^{-18}\sum_{i=1}^{8}(2048)_i \genfrac{\{}{\}}{0pt}{}{18}{i} \approx 1.437 \times 10^{-22} \approx 2^{-72.56}$) or if $m > m_{\max} = 45$. Extract $\mathsf{leaf\_addr} \in [0, 2^{48})$ from bits $198..246$ (disjoint from bits $0..198$; bits $246..256$ are unused). The deterministic signer picks the smallest valid $\mathrm{ctr}_{\mathrm{ft}}$ (failing closed if $u32$ exhausts; exact exhaustion probability $(1 - \alpha p_{\mathrm{cap}})^{2^{32}} < 2^{-652{,}459}$); the verifier checks only the encoded $\mathrm{ctr}_{\mathrm{ft}}$.
+  \item \textbf{Chained \texttt{FEW\_CODE} (\texttt{SPEC.md §8.2}):} Given the accepted $32$-byte digest $H_{\mathrm{sel}}$, for $\mathsf{blk} \in [0, 2^{16})$, compute
     \[
-      B_{\mathsf{blk}} \;=\; \Keyed\!\big(K_{\mathrm{pub}},\, \Tweak(\mathtt{FEW\_CODE}, \mathtt{0x80}, 0,0,\mathsf{blk}, 0) \parallel D_{\mathrm{seed}} \parallel \mathrm{u32\_le}(\mathrm{ctr}_{\mathrm{ft}})\big)
+      B_{\mathsf{blk}} \;=\; \Keyed\!\big(K_{\mathrm{pub}},\, \Tweak(\mathtt{FEW\_CODE}, \mathtt{0x80}, 0,0,\mathsf{blk}, 0) \parallel H_{\mathrm{sel}}\big) \quad (48\text{ B})
     \]
-    and read $28$ consecutive $9$-bit chunks, accepting values $< 376$ with zero modulo bias until $10$ codeword indices are collected. In the ideal model, $\Pr[\mathrm{Bin}(28j, 376/512) < 10]$ is $\approx 5.9 \times 10^{-6}$ for $j = 1$ block and $\approx 2^{-61}$ for $j = 2$ blocks; both signer and verifier fail closed if $\mathsf{blk}$ would exceed $65535$.
-  \item \textbf{Canonical Octopus padding (\texttt{SPEC.md §10.2}):} Emit the $m \le 44$ Octopus siblings bottom-up followed by $(44 - m) \cdot 16$ zero bytes ($704$~B fixed); verifiers MUST check all trailing padding bytes are zero in constant time.
+    and read $28$ consecutive $9$-bit chunks, accepting values $< 376$ with zero modulo bias until $9$ codeword indices are collected. Chaining \texttt{FEW\_CODE} directly from $H_{\mathrm{sel}}$ (rather than from $D_{\mathrm{seed}} \parallel \mathrm{ctr}_{\mathrm{ft}}$) reduces input length by $4$~B while binding codeword extraction to the selection output so any code-first pre-query for a candidate must guess $H_{\mathrm{sel}}$ (\cref{sec:security}). In the ideal model, $\Pr[\mathrm{Bin}(28j, 376/512) < 9]$ is $\approx 9.29 \times 10^{-7}$ ($2^{-20.04}$) for $j = 1$ block and $\approx 2.96 \times 10^{-20}$ ($2^{-64.87}$) for $j = 2$ blocks; both signer and verifier fail closed if $\mathsf{blk}$ would exceed $65535$.
+  \item \textbf{Canonical Octopus padding (\texttt{SPEC.md §10.2}):} Emit the $m \le 45$ Octopus siblings bottom-up followed by $(45 - m) \cdot 16$ zero bytes ($720$~B fixed); verifiers MUST reject any non-zero trailing padding byte in constant time.
 \end{enumerate}
 
 \subsection{Two-Stage Single-Pass Salted Content Hashing}
 \label{sec:content-hash}
-To stream arbitrarily large messages $M$ in a single pass while avoiding reliance on unsalted collision resistance of $M$ under normal operation, the signer draws $32$ random bytes $\mathsf{draw}$ \emph{before} reading $M$ and computes (with $\mathsf{framed\_ctx} = \mathrm{u8}(|\mathsf{ctx}|) \parallel \mathsf{ctx}$ for $|\mathsf{ctx}| \le 255$):
+To hash arbitrarily large messages $M$ ($|M| < 2^{64}$) in a single streaming pass, the signer draws $32$ fresh random bytes $\mathsf{draw}$ before reading $M$ and computes, with $\mathsf{framed\_ctx} = \mathrm{u8}(|\mathsf{ctx}|) \parallel \mathsf{ctx}$ ($|\mathsf{ctx}| \le 255$):
 \begin{gather*}
   e = \Keyed(K_{\mathrm{salt}}, \mathsf{draw})[0..16], \qquad
   K_{\mathrm{msg}} = \Keyed(K_{\mathrm{content}},\, e \parallel \mathsf{framed\_ctx}), \\
@@ -193,17 +217,23 @@ To stream arbitrarily large messages $M$ in a single pass while avoiding relianc
   R = \Keyed(K_R,\, \mathsf{short} \parallel \mathsf{framed\_ctx})[0..16], \\
   D_{\mathrm{seed}} = \Keyed\!\big(K_{\mathrm{pub}},\, \Tweak(\mathtt{MESSAGE}) \parallel R \parallel \mathsf{root} \parallel \mathsf{short} \parallel \mathsf{framed\_ctx}\big).
 \end{gather*}
-Notice that $K_{\mathrm{content}}$ and $K_{\mathrm{msg}}$ are public once $e$ is published: this is a randomized hash family, not a MAC. For honest signing, $\mathsf{draw}$ (and hence $e$) must not be revealed to the message submitter before $M$ and $\mathsf{ctx}$ are committed (streaming APIs must not leak $e$ before the producer commits $M$). If $\mathsf{draw}$ repeats across distinct $(\mathsf{ctx}_1, M_1) \neq (\mathsf{ctx}_2, M_2)$ while $\mathsf{seed}$ remains secret, \texttt{rng\_failure\_\allowbreak hedged\_fallback} proves that either $\mathsf{ctx}_1 = \mathsf{ctx}_2$ with a $256$-bit keyed-\BLAKE{} collision on $h_{\mathrm{msg}}$, or the inputs to the secret-keyed PRF $\Keyed(K_R, \cdot)$ are strictly distinct (preserving pseudorandomness of $R$ up to $128$-bit truncation collisions, while content hashing degrades to $128$-bit known-salt collision resistance).
+\emph{Normative commitment rule (\texttt{SPEC.md §7}):} signers MUST NOT disclose $e$ or $K_{\mathrm{msg}}$ to a message submitter before $(\mathsf{ctx}, M)$ is committed. Because $K_{\mathrm{content}}$ depends only on $\mathsf{SignetId}$, $K_{\mathrm{msg}}$ is public once $e$ is published (a randomized hash family, not a MAC). If $\mathsf{draw}$ repeats across distinct $(\mathsf{ctx}_1, M_1) \neq (\mathsf{ctx}_2, M_2)$ while $\mathsf{seed}$ remains secret, \texttt{rng\_\allowbreak failure\_\allowbreak hedged\_\allowbreak fallback} proves that either $\mathsf{ctx}_1 = \mathsf{ctx}_2$ with a collision on the public $256$-bit-output hash $h_{\mathrm{msg}}$ (generic classical collision work $\approx 2^{128}$), or the inputs to the secret-keyed PRF $\Keyed(K_R, \cdot)$ are strictly distinct (preserving pseudorandomness of $R$ under the PRF game).
 
-\subsection{Complete Parameter Summary and Exact Compression Counts}
-\Cref{tab:params} summarizes \BLINCS{}. With prederived verifier keys ($K_{\mathrm{pub}}$, $K_{\mathrm{content}}$, $\mathsf{root}$), $|M| \le 64$, $|\mathsf{ctx}| \le 31$, $m \le 44$ consumed Octopus siblings, and $b \ge 1$ \texttt{FEW\_CODE} blocks, verification executes exactly:
-\begin{align*}
-  &\underbrace{1}_{K_{\mathrm{msg}}} + \underbrace{1}_{h_{\mathrm{msg}}} + \underbrace{2}_{D_{\mathrm{seed}}} + \underbrace{1}_{\mathtt{FEW\_SELECT}} + \underbrace{b}_{\mathtt{FEW\_CODE}}
-  + \underbrace{270}_{\text{\UPORS{} chains}} + \underbrace{10}_{\text{\UPORS{} leaves}} + \underbrace{(m + 9)}_{\text{Octopus}} \\
-  &\quad + \underbrace{4(1 + 468 + 7)}_{\text{4 \SWOTS{} layers}} + \underbrace{33}_{\text{HT auth}}
-  \;=\; 2{,}231 + m + b
-\end{align*}
-compressions (since $10$ leaves and $m$ siblings merge to $1$ root via $10 + m - 1 = m + 9$ binary combines; trailing zero padding adds zero hashes). Thus short-message verification executes \textbf{$2{,}276$ compressions} at $m = 44, b = 1$ (typical range $2{,}272$--$2{,}276$, with $b = 1$ for $99.9994\%$ of imprints).
+\subsection{Parameter Summary, Compression Counts, and Cache Accounting}
+\Cref{tab:params} summarizes \BLINCS{}. Each \WOTSC{} leaf costs $21(1 + 59) + 6 = 1{,}266$ compressions, a height-$7$ lower tree costs $128 \cdot 1{,}266 + 127 = 162{,}175$, the height-$13$ top tree costs $8{,}192 \cdot 1{,}266 + 8{,}191 = \mathbf{10{,}379{,}263}$, and the height-$11$ \UPORS{} tree costs $2{,}048 \cdot (3 \cdot 24 + 1) + 2{,}047 = 151{,}551$.
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt]
+  \item \textbf{Full top-tree cache ($256\text{ KiB}$, $16{,}383 \times 16$~B heap):} Ideal harvested warm signing performs $5 \cdot 162{,}175 + 151{,}551 + (21 + 679) = \mathbf{963{,}126}$ fixed compressions (when active lower-layer chain states are harvested during the tree build, while the active top leaf runs $21$ secret derivations plus $\sum d_i = 679$ steps). Our desktop batch implementation (\cref{sec:codesign}) instead regenerates the single active leaf per lower layer in a second pass ($+5 \cdot 700 = +3{,}500$ compressions, totaling $966{,}626$ fixed) and optionally runs a full verification self-check ($+3{,}761$, totaling $970{,}387$ fixed). For a $64$~B message and $31$~B context, framing adds $8$ compressions ($K_{\mathrm{msg}}[1], h_{\mathrm{msg}}[1], e[1], R[2]$ on $48+32=80$~B, $D_{\mathrm{seed}}[2], \mathtt{FEW\_CODE}[1]$).
+  \item \textbf{Partial top-tree cache ($16\text{ KiB}$ cut vs.\ $32\text{ KiB}$ upper heap):} Storing only the $1{,}024$ subtree roots at depth $10$ ($16\text{ KiB}$) replaces the $700$ top-leaf compressions with one $8$-leaf top subtree ($8 \cdot 1{,}266 + 7 = 10{,}135$) plus $1{,}023 - 10 = 1{,}013$ upper internal merges to rebuild the depth-$10$ authentication siblings, totaling $\mathbf{973{,}574}$ ideal harvested fixed compressions ($+1.08\%$ vs.\ $256\text{ KiB}$). Storing the full height-$10$ upper heap ($2{,}047$ nodes, $32\text{ KiB}$) removes the $1{,}013$ upper merges ($\mathbf{972{,}561}$ fixed compressions, $+0.98\%$). All cache configurations produce byte-for-byte identical signatures.
+  \item \textbf{Model grinding distribution:} Under the unbounded fresh-stream geometric model $\sum_{i=1}^{6}\mathrm{Geom}(p_{\mathrm{wots}}) + \mathrm{Geom}(\alpha p_{\mathrm{cap}})$, the mean is $6 \cdot 4{,}086.92 + 9{,}497.37 = \mathbf{34{,}018.89}$ compressions and the exact discrete $99$th percentile is $\mathbf{75{,}533}$ compressions, verified directly inside \texttt{tools/upors\_cert.rs} via exact integer comparisons on an $8$-state scale-$2^{96}$ Markov bracket proving $\mathrm{CDF}(75{,}532) < 99/100 \le \mathrm{CDF}(75{,}533)$ (brackets $\approx 0.98999985$ and $0.99000087$; grinding $p99/\text{mean} = 2.22\times$; total warm-sign $p99/\text{mean} = 1.042\times$ at $256\text{ KiB}$ and $1.041\times$ at $16\text{ KiB}$; repeated physical addresses reuse deterministic \WOTSC{} counters rather than redrawing).
+  \item \textbf{Short-message verification:} With prederived verifier keys ($K_{\mathrm{pub}}, K_{\mathrm{content}}, \mathsf{root}$), $|M| \le 64$, $|\mathsf{ctx}| \le 31$, $m \le 45$ consumed Octopus siblings, and $b \ge 1$ \texttt{FEW\_CODE} blocks, successful verification executes
+    \begin{align*}
+      &\underbrace{1}_{K_{\mathrm{msg}}} + \underbrace{1}_{h_{\mathrm{msg}}} + \underbrace{2}_{D_{\mathrm{seed}}} + \underbrace{1}_{\mathtt{FEW\_SELECT}} + \underbrace{b}_{\mathtt{FEW\_CODE}}
+      + \underbrace{243}_{\text{\UPORS{} chains}} + \underbrace{9}_{\text{\UPORS{} leaves}} + \underbrace{(m + 8)}_{\text{Octopus}} \\
+      &\quad + \underbrace{6(1 + 560 + 6)}_{\text{6 \WOTSC{} layers}} + \underbrace{48}_{\text{HT auth}}
+      \;=\; 3{,}715 + m + b
+    \end{align*}
+    \BLAKE{} compressions---\textbf{$3{,}761$ compressions} at $m = 45, b = 1$ (typical range $3{,}757$--$3{,}761$; note that multi-block \texttt{ONE\_TIME\_KEY} and \texttt{MESSAGE} calls each count as one whole-input oracle query in \cref{sec:security}).
+\end{itemize}
 
 \begin{table}[t]
 \centering
@@ -215,229 +245,311 @@ compressions (since $10$ leaves and $m$ siblings merge to $1$ root via $10 + m -
 \toprule
 Parameter & Value & Parameter & Value \\
 \midrule
-Primitive & Pure $32$~B \BLAKE{} ($0$ XOF) & Hypertree & $d{=}4$, $h{=}33$ ($12{+}7{+}7{+}7$) \\
-Node / salt / $R$ ($N$) & $16\text{ B}$ ($128$ bits) & Top cache ($h_{\mathrm{top}}{=}12$) & $128\text{ KiB}$ ($8{,}192{\times}16$~B) \\
-\SWOTS{} & $n{=}24, w{=}40, S{=}468, z{=}8$ & \UPORS{} & $A{=}10, n{=}3, w{=}24, S{=}42, C{=}376$ \\
-\UPORS{} opens / cap & $k{=}10$, $m_{\max}{=}44$ ($u32$) & Static verify tables & \textbf{$0\text{ B}$} (boxcar + hexagon) \\
-Verifying key & $32\text{ B}$ ($\mathsf{pk\_seed} \parallel \mathsf{root}$) & Signature (\texttt{Imprint}) & \textbf{$3{,}292\text{ B}$} ($4{,}392$~B B64) \\
-Keygen (\texttt{from\_seed}) & $3.96\text{M}$ comp.\ ($31.97\text{ ms}$) & Warm sign & $448\text{k}$ fix $+{\approx}2.3\text{k}$ ($4.15\text{ ms}$) \\
-Verify (short, $b{=}1$) & $2{,}231{+}m{+}b$ ($\mathbf{2{,}276}$ @ $44$) & Verify (M6, 1 core) & $39.1\;\mu\text{s}$ ($7.04$ IPC, $0$ alloc) \\
+Primitive & Pure $32$~B \BLAKE{} ($0$ XOF) & Hypertree & $d{=}6$, $h{=}48$ ($13{+}7{\times}5$) \\
+Node / salt / $R$ ($N$) & $16\text{ B}$ ($128$ bits) & Top cache (optional) & $256\text{ KiB}$ full / $16\text{ KiB}$ cut \\
+\WOTSC{} & $n{=}21, w{=}60, z{=}2, S{=}679$ ($u24$) & \UPORS{} & $A{=}11, n{=}3, w{=}24, S{=}42, C{=}376$ \\
+\UPORS{} opens / cap & $k{=}9$, $m_{\max}{=}45$ ($u32$, $18$ draws) & Static verify tables & \textbf{$0\text{ B}$} (packed + scan) \\
+Verifying key & $32\text{ B}$ ($\mathsf{pk\_seed} \parallel \mathsf{root}$) & Signature (\texttt{Imprint}) & \textbf{$3{,}990\text{ B}$} ($5{,}320$~B B64) \\
+Keygen (\texttt{from\_seed}) & $10.38\text{M}$ comp.\ ($82.74\text{ ms}$) & Warm sign (M6, 1c) & $967\text{k}{+}\text{chk}{+}{\approx}34\text{k}$ ($8.45\text{ ms}$) \\
+Verify (short, $b{=}1$) & $3{,}715{+}m{+}b$ ($\mathbf{3{,}761}$ @ $45$) & Verify (M6, 1c) & $62.7\;\mu\text{s}$ ($7.44$ IPC, $0$ alloc) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\section{Exact Capped-History \UPORS{} Security Analysis}
+\section{Exhaustive All-Orbits Capped-History \UPORS{} Certification}
 \label{sec:upors-security}
 
-This section analyzes the core statistical question of \BLINCS{}: how secure is \UPORS{} when \emph{both} the honest signer and the verifier enforce the Octopus sibling cap $\mathrm{sibs}(S) \le 44$?
+Enforcing the Octopus sibling cap $m_{\max} = 45$ on \emph{both} honest signers and verifiers alters the honest-history law. Rather than assuming negative association or estimating target expectations via Monte Carlo, this section proves the failure of negative association and evaluates a deterministic all-orbits upper-envelope bound across the \emph{entire} family $\calF$.
 
 \subsection{Exact Enumeration of $\calF$ and Proof That the Cap Breaks Negative Association}
-In the ideal-output model of \texttt{FEW\_SELECT} (\texttt{SPEC.md §8.1}), bits $0..220$ (leaf selection) and bits $220..253$ ($\mathsf{leaf\_addr}$) are disjoint and independent. Conditioned on obtaining $10$ distinct leaves in $22$ draws (probability $1 - O(2^{-49})$), the sorted $10$-subset is uniform on $\binom{[1024]}{10}$ by permutation symmetry. Rejecting until $\mathrm{sibs}(S) \le 44$ preserves a uniform $\mathsf{leaf\_addr} \in [2^{33}]$ while changing the honest signer's set distribution to $\mu = \Unif(\calF)$, where $\calF = \{S \subset [1024] : |S| = 10,\ \mathrm{sibs}(S) \le 44\}$.
+In the ideal-output model of \texttt{FEW\_SELECT}, bits $0..198$ ($18$ draws of $11$-bit leaves) and bits $198..246$ ($\mathsf{leaf\_addr}$) are disjoint. Conditioned on obtaining $9$ distinct leaves within $18$ draws (probability $\alpha = 1 - 1.437 \times 10^{-22}$), the sorted $9$-subset is uniform on $\binom{[2048]}{9}$ by full permutation symmetry of the draws. Conditioning further on $\mathrm{sibs}(S) \le 45$ therefore induces the \emph{exact} product distribution $\mathsf{leaf\_addr} \sim \Unif([0, 2^{48}))$ independently of $S \sim \Unif(\calF)$, where $\calF = \{S \subset [2048] : |S| = 9,\ \mathrm{sibs}(S) \le 45\}$. (Notice that tree-automorphism invariance alone would not prove uniformity across the $1{,}614{,}132$ orbits of $\calF$; uniformity on $\calF$ follows from conditioning the uniform distribution on $\binom{[2048]}{9}$.)
 
-Define the bivariate subtree enumerator $F_h(x, y) = \sum_{S \subseteq [2^h]} x^{|S|} y^{\mathrm{sibs}_h(S)}$. Clearly $F_0(x, y) = 1 + x$, and combining two independent height-$h$ subtrees adds $1$ sibling iff exactly one subtree is nonempty:
+The bivariate subtree enumerator $F_h(x, y) = \sum_{S \subseteq [2^h]} x^{|S|} y^{\mathrm{sibs}_h(S)}$ satisfies $F_0(x, y) = 1 + x$ and
 \begin{equation}
 \label{eq:Fh}
   F_{h+1}(x, y) \;=\; 1 \;+\; 2y\,(F_h(x, y) - 1) \;+\; (F_h(x, y) - 1)^2.
 \end{equation}
-Evaluating \eqref{eq:Fh} in exact $u128$ integer arithmetic (\texttt{tools/upors\_cert.rs}) gives the exact family size and cap acceptance probability with zero Monte Carlo error:
+Exact $u128$ evaluation of \eqref{eq:Fh} in \texttt{tools/upors\_cert.rs} gives
 \begin{align*}
-  |\calF| &= \sum_{s=0}^{44} [x^{10} y^s]\, F_{10}(x, y) = 256{,}172{,}225{,}164{,}499{,}838{,}464, \\
-  p_{\mathrm{cap}} &= \frac{|\calF|}{\binom{1024}{10}} = 7.663726694 \times 10^{-4} \approx 2^{-10.3497}
+  |\calF| &= \sum_{s=10}^{45} [x^9 y^s]\, F_{11}(x, y) = 180{,}700{,}154{,}447{,}569{,}471{,}488, \\
+  p_{\mathrm{cap}} &= \frac{|\calF|}{\binom{2048}{9}} \approx 1.0529230957 \times 10^{-4} \approx 2^{-13.2133}
 \end{align*}
-(mean $1 / p_{\mathrm{cap}} = 1{,}304.85$ trials; $46.39\%$ of $\calF$ lies at $s = 44$, $25.45\%$ at $s = 43$, $13.66\%$ at $s = 42$).
+($1 / p_{\mathrm{cap}} \approx 9{,}497.370$; $47.98\%$ of $\calF$ lies at $s = 45$, $25.40\%$ at $s = 44$, $13.23\%$ at $s = 43$, across $36$ nonempty strata $s \in [10..45]$). The raw per-counter acceptance probability is $\alpha p_{\mathrm{cap}} \le p_{\mathrm{cap}}$.
 
-Because $\calF$ is invariant under binary-tree automorphisms, every individual leaf still has exact marginal inclusion probability $p = 10/1024$. Crucially, however, \emph{conditioning on $\calF$ destroys negative association}~\cite{joagdev1983na}:
+While tree-automorphism invariance keeps every single leaf's marginal probability at $p = 9 / 2048$, conditioning on $\calF$ \emph{destroys negative association}~\cite{joagdev1983na}:
 
 \begin{proposition}[Failure of Negative Association under $\Unif(\calF)$]
 \label{prop:na-fails}
-Under $D \sim \Unif(\calF)$, the leaf indicators $\{\mathbf{1}[\ell \in D]\}_{\ell \in [1024]}$ cannot have nonpositive pairwise covariances; in particular, they are not negatively associated.
+Under $D \sim \Unif(\calF)$, the leaf indicators $\{\mathbf{1}[\ell \in D]\}_{\ell \in [2048]}$ cannot have nonpositive pairwise covariances; in particular, they are not negatively associated.
 \end{proposition}
 \begin{proof}
-Let $n_j(D)$ be the number of occupied height-$j$ subtrees ($n_0 = 10$, $n_{10} = 1$). Level $j$ emits $2 n_{j+1} - n_j$ siblings, so $\mathrm{sibs}(D) = \sum_{j=0}^{9}(2n_{j+1} - n_j) = \sum_{j=1}^{9} n_j - 8$. Hence $D \in \calF$ implies $\sum_{j=1}^{9} n_j \le 52$. If every distinct pair $u \neq v$ had $\mathrm{Cov}(\mathbf{1}[u \in D], \mathbf{1}[v \in D]) \le 0$, i.e.\ $\Pr[u, v \in D] \le p^2$, then inside each height-$j$ block every leaf beyond the first contributes at least one same-block pair, giving $\mathbb{E}[n_j] \ge 10 - \frac{1024}{2^j}\binom{2^j}{2} p^2 = 10 - \frac{50(2^j - 1)}{1024}$. Summing just $j = 1,\dots,6$ yields $\mathbb{E}[\sum_{j=1}^6 n_j] \ge 60 - 6000/1024 > 54.14 > 52$, a contradiction.
+Let $n_j(D)$ be the number of occupied height-$j$ subtrees ($n_0 = 9$, $n_{11} = 1$). Level $j$ emits $2 n_{j+1} - n_j$ siblings, so $\mathrm{sibs}(D) = \sum_{j=0}^{10}(2 n_{j+1} - n_j) = 2 n_{11} - n_0 + \sum_{j=1}^{10} n_j = \sum_{j=1}^{10} n_j - 7$. Hence $D \in \calF$ implies $\sum_{j=1}^{10} n_j \le 52$. If every distinct pair $u \neq v$ satisfied $\Pr[u, v \in D] \le p^2$ ($p = 9/2048$), then inside each height-$j$ block every occupied leaf beyond the first contributes at least one same-block pair, giving $\mathbb{E}[n_j] \ge 9 - \frac{2048}{2^j}\binom{2^j}{2} p^2 = 9 - \frac{81(2^j - 1)}{4096}$. Summing just $j = 1,\dots,7$ yields $\mathbb{E}[\sum_{j=1}^7 n_j] \ge 63 - \frac{81 \cdot 247}{4096} > 58.11 > 52$, a contradiction.
 \end{proof}
 
-Extending the integer tree DP \eqref{eq:Fh} to count sets containing fixed pairs $\{0, 2^{d-1}\}$ quantifies the exact pairwise clustering by LCA height $d \in \{1,\dots,10\}$: adjacent siblings ($d = 1$) co-occur \textbf{$16.013\times$} more often than in uncapped sampling ($1.376 \times 10^{-3}$ vs.\ $8.591 \times 10^{-5}$), cousins ($d = 2$) $10.011\times$, $d = 3$ $6.366\times$, $d = 4$ $4.148\times$, $d = 5$ $2.779\times$, $d = 6$ $1.928\times$, dropping below $1\times$ only at $d \in \{9, 10\}$ ($0.847\times$, $0.744\times$).
-
-Furthermore, for a fixed $r = 1$ historical signature $D_1 \sim \Unif(\calF)$, a raw candidate $S^* \sim \Unif(\binom{[1024]}{10})$ covering $D_1$ must satisfy $S^* = D_1$ (which is automatically cap-valid!) and match all $10$ codewords (by the antichain property of $\calC$), giving exact raw-query success probability
+Extending the exact integer tree DP \eqref{eq:Fh} to fixed pairs $\{0, 2^{d-1}\}$ gives the exact pairwise ratios $\Pr_{D \sim \Unif(\calF)}[u,v \in D] / p^2$ across LCA heights $d = 1,\dots,11$:
+\[
+  30.35\times,\; 18.27\times,\; 11.17\times,\; 6.95\times,\; 4.43\times,\; 2.89\times,\; 1.94\times,\; 1.35\times,\; 0.97\times,\; 0.73\times,\; 0.55\times
+\]
+(relative to the marginal product $p^2 = (9/2048)^2$). At occupancy $r = 1$ with one historical signature $D_1 \sim \Unif(\calF)$, any raw candidate $S^*$ covering $D_1$ must satisfy $S^* = D_1$ (automatically cap-valid) and match all $9$ codewords by the antichain property of $\calC$, yielding exact raw-query cover probability (up to $\alpha \le 1$ and non-exhausted \texttt{FEW\_CODE}):
 \begin{equation}
 \label{eq:r1}
-  P_{\mathrm{raw}}(1) \;=\; \binom{1024}{10}^{-1} \cdot 376^{-10} \;=\; 5.296994457 \times 10^{-50} \;\approx\; 2^{-163.6912},
+  P_{\mathrm{raw}}(1) \;\le\; \binom{2048}{9}^{-1} \cdot 376^{-9} \approx 3.879248 \times 10^{-48} \approx 2^{-157.4968},
 \end{equation}
-with \textbf{zero net cap credit} at $r = 1$ (whereas an uncapped-signer model wrongly credits $p_{\mathrm{cap}}$!).
+confirming zero net cap credit at $r = 1$.
 
-\subsection{Exact Generating-Function Formulation and Certified $3$-Term Envelope}
-Let $q_\calC(t)$ be the probability that a uniform $c^* \in \calC$ dominates the coordinatewise minimum of $t$ i.i.d.\ uniform codewords $c^{(1)}, \dots, c^{(t)} \in \calC$ ($q_\calC(0) = 0$). By $3$-coordinate inclusion--exclusion over $(a^*, b^*, c^*) \in \calC$ (noting no $c \in \calC$ strictly exceeds $c^*$ in all three coordinates simultaneously since $a+b+c = 42$), exact values are $q_\calC(1) = 1/376 \approx 0.002660$, $q_\calC(2) = 0.170004$, $q_\calC(3) = 0.336239$, $q_\calC(4) = 0.458771$, $q_\calC(5) = 0.547735$, with maximum non-unit exponential base $z_{\max} = 371/376 \approx 0.986702$.
+\subsection{Integer-Certified $3$-Term Envelope and Exact All-Orbits Binomial Series}
+Let $q_\calC(t)$ be the probability that a uniform $c^* \in \calC$ dominates the coordinatewise minimum of $t$ i.i.d.\ uniform codewords in $\calC$ ($q_\calC(0) = 0$). For each $v \in \calC$, let $A_i(v) = |\{d \in \calC : d_i > v_i\}|$ and $B_{ij}(v) = |\{d \in \calC : d_i > v_i \wedge d_j > v_j\}|$; because no $d \in \calC$ exceeds $v$ in all three coordinates simultaneously, for every integer $t \ge 1$,
+\[
+  1 - q_\calC(t) \;=\; \frac{D(t)}{376^{t+1}}, \qquad D(t) \;=\; \sum_{v \in \calC} \left(\sum_{i=0}^{2} A_i(v)^t - \sum_{0 \le i < j \le 2} B_{ij}(v)^t\right).
+\]
+This yields $q_\calC(1) = 1/376 \approx 0.002660$, $q_\calC(2) \approx 0.170004$, $q_\calC(3) \approx 0.336239$, $q_\calC(4) \approx 0.458771$, $q_\calC(5) \approx 0.547735$.
 
-Fix an occupancy $R_{\mathrm{occ}} = r \ge 1$ at the target address and a candidate $S^* = \{s_1, \dots, s_{10}\} \in \calF$. Because the $r$ historical sets $D_1, \dots, D_r \stackrel{\text{i.i.d.}}{\sim} \mu = \Unif(\calF)$ are independent, let $p_{S^*}(A) = \Pr_{D \sim \mu}[D \cap S^* = A]$ for $A \subseteq S^*$ ($2^{10} = 1{,}024$ subsets) and define the multilinear probability-generating function $G_{S^*, \mu}(\mathbf{z}) = \sum_{A \subseteq S^*} p_{S^*}(A) \prod_{i \in A} z_i$. Letting $T_i = |\{j \in [r] : s_i \in D_j\}|$, the exact raw-query cover probability at occupancy $r$ is
-\begin{equation}
-\label{eq:praw}
-  P_{\mathrm{raw}}(r) \;=\; p_{\mathrm{cap}} \cdot \mathbb{E}_{S^* \sim \Unif(\calF)}\!\left[\mathbb{E}_{D_1,\dots,D_r \sim \Unif(\calF)}\!\left[\prod_{i=1}^{10} q_\calC(T_i)\right]\right].
-\end{equation}
-
-\begin{lemma}[Certified $3$-Term Exponential Upper Envelope]
+\begin{lemma}[All-Integer Certified $3$-Term Exponential Upper Envelope]
 \label{lem:envelope}
-Define $u_3(t) = 1 - \frac{8905}{7144}\,(0.81)^t + \frac{1761}{7144}\,(0.05)^t$. Then $u_3(0) = 0 = q_\calC(0)$, $u_3(1) = \frac{1}{376} = q_\calC(1)$, and $u_3(t) \ge q_\calC(t)$ for \emph{every} integer $t \ge 0$ (with $u_3(2)/q_\calC(2) = 1.0752$, $u_3(3)/q_\calC(3) = 1.0040$, and $1 - u_3(t) = O(0.81^t) \ll (371/376)^t$ for all large $t$). Consequently, for every $S^* \in \calF$ and every $r \ge 1$, with \textbf{zero} negative-association or factorization assumptions,
-\begin{equation}
-\label{eq:kronecker}
-  \mathbb{E}_{D_1,\dots,D_r \sim \mu}\!\left[\prod_{i=1}^{10} q_\calC(T_i)\right]
-  \;\le\;
-  \sum_{\mathbf{j} \in \{0,1,2\}^{10}} \left(\prod_{i=1}^{10} c_{j_i}\right) \Big(G_{S^*, \mu}(z_{j_1}, \dots, z_{j_{10}})\Big)^r,
-\end{equation}
-where $(z_0, z_1, z_2) = (1, \frac{81}{100}, \frac{5}{100})$ and $(c_0, c_1, c_2) = (1, -\frac{8905}{7144}, \frac{1761}{7144})$.
+Define $u_3(t) = 1 - \frac{7495}{5546}(\frac{79}{100})^t + \frac{1949}{5546}(\frac{20}{100})^t$. Then $u_3(0) = q_\calC(0) = 0$, $u_3(1) = q_\calC(1) = \frac{1}{376}$, and $u_3(t) \ge q_\calC(t)$ for \emph{every} integer $t \ge 0$ (with $u_3(2)/q_\calC(2) \approx 1.00370$ and $u_3(3)/q_\calC(3) \approx 1.00080$).
 \end{lemma}
-
-\paragraph{Zero-cancellation evaluation and all-$37$-strata certification (\texttt{tools/upors\_cert.rs}).}
-For any fixed $S^* \in \calF$: (i)~an exact $u128$ tree DP computes all $1{,}024$ integer counts $|\calF| \cdot p_{S^*}(A)$ with zero approximation (capturing even $10^{-21}$ full-collision overlaps $A = S^*$); (ii)~a $10$-axis Kronecker transform evaluates $G_{S^*,\mu}(\mathbf{z}_{\mathbf{j}})$ across all $3^{10} = 59{,}049$ tuples in $320$-bit signed fixed-point arithmetic ($256$ fractional bits $\approx 77$ decimal digits, eliminating catastrophic cancellation down to $2^{-256}$), validating \eqref{eq:r1} to $12+$ digits and validating uncapped $r = 2$ ($144.0615\text{ b}$ vs.\ exact closed-form $144.2003\text{ b}$). Because heavily clustered rare targets $S^*$ (e.g.\ $s = 8$) have much higher conditional hit rates, we \emph{stratify} $S^*$ across all $37$ nonempty sibling strata $s \in \{8, \dots, 44\}$ using exact integer stratum weights $w_s = F_{10}[10][s] / |\calF|$, drawing $64$ exact samples per stratum for $s \ge 38$, $32$ for $30 \le s \le 37$, and $16$ for $s < 30$ (via exact top-down $F_h$-guided tree sampling), and forming one-sided $99\%$ confidence bounds in \emph{probability space} (plus exact tail mass for $r > 28$, $< 10^{-30}$) before taking $-\log_2$.
-
-\begin{table}[t]
-\centering
-\small
-\caption{Auditable certified raw-query \UPORS{} security ($\text{bits} = -\log_2 \mathbb{E}_{R_{\mathrm{occ}}}[P_{\mathrm{raw}}(R_{\mathrm{occ}})]$) via \texttt{tools/upors\_cert.rs} ($h = 33$, $r \le 28$, zero tail mass). Two independent replications agree to $0.02$~bits (`SE` $0.77$--$1.34\%$). Note that $2^{33}$ ($2\times$ overuse) drops below $128$~bits once capped-history clustering is accounted for.}
-\label{tab:itsr}
-\begin{tabular}{@{}rcccc@{}}
-\toprule
-Budget $q_s$ & Exact Uncapped & Certified True \BLINCS{} & $99\%$ One-Sided & True Net Cap \\
-($h = 33$) & (\texttt{Unc+Unc}, $0$ MC) & (\texttt{Cap+Cap}, Rep.\ 1 / Rep.\ 2) & LCB (Rep.\ 1) & Effect ($\Delta_{\mathrm{cap}}$) \\
-\midrule
-$2^{30}$ & $141.17\text{ b}$ & $142.88\text{ b} \;/\; 142.90\text{ b}$ & $142.83\text{ b}$ & $+1.70\text{ b}$ \\
-$2^{31}$ & $135.83\text{ b}$ & $137.89\text{ b} \;/\; 137.92\text{ b}$ & $137.85\text{ b}$ & $+2.06\text{ b}$ \\
-$\mathbf{2^{32}}$ \textbf{(budget)} & $\mathbf{129.63\text{ b}}$ & $\mathbf{132.17\text{ b}} \;/\; \mathbf{132.19\text{ b}}$ & $\mathbf{132.13\text{ b}}$ & $\mathbf{+2.54\text{ b}}$ \\
-$2^{33}$ ($2\times$) & $122.36\text{ b}$ & $125.52\text{ b} \;/\; 125.54\text{ b}$ & $125.48\text{ b}$ & $+3.16\text{ b}$ \\
-$2^{34}$ ($4\times$) & $113.83\text{ b}$ & $117.76\text{ b} \;/\; 117.78\text{ b}$ & $117.72\text{ b}$ & $+3.93\text{ b}$ \\
-$2^{35}$ ($8\times$) & $103.81\text{ b}$ & $108.66\text{ b} \;/\; 108.68\text{ b}$ & $108.63\text{ b}$ & $+4.85\text{ b}$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\Cref{tab:itsr} shows the striking physics of Octopus capping: compared to naive uncapped-signer estimates (which gave $\approx +6.8$~b), the $16.01\times$ sibling clustering in honest $\Unif(\calF)$ histories absorbs $\approx 4.2$~bits of the verifier-rejection benefit, leaving a real net gain of \textbf{$+2.54$~bits at $q_s = 2^{32}$} (\textbf{$132.13\text{ b}$ $99\%$ LCB}, $+4.1$~bits above $128$) while bringing $2^{33}$ overuse down to $125.48\text{ b}$.
-
-\paragraph{Classical ROM query bound (no free high-occupancy targeting).}
-Because $\mathsf{leaf\_addr}$ is extracted from bits $220..253$ of $H_{\mathrm{sel}}$ \emph{jointly} with $S^*$, an offline adversary varying $(e, R, M, \mathrm{ctr}_{\mathrm{ft}})$ cannot pin a high-occupancy address without re-rolling $\mathsf{leaf\_addr}$ on every \texttt{FEW\_SELECT} query. For any fixed signing transcript with empirical occupancy histogram $\{N_r\}_{r \ge 0}$ ($\sum_r N_r = 2^{33}$), a fresh random-oracle \texttt{FEW\_SELECT} query lands on an address of occupancy $r$ with probability $N_r / 2^{33}$, whose expectation over the signing transcript is $\Pr[R_{\mathrm{occ}} = r]$. By linearity of expectation and union bound over $Q_{\mathrm{sel}}$ offline \texttt{FEW\_SELECT} queries, the adversary's expected probability of producing any covered fresh selection is bounded by
-\begin{equation}
-\label{eq:rom-upors}
-  \Adv^{\mathrm{\UPORS{}}}_{\mathrm{ROM}}(q_s, Q_{\mathrm{sel}})
-  \;\le\; Q_{\mathrm{sel}} \cdot \sum_{r = 1}^{q_s} \Pr[R_{\mathrm{occ}} = r]\, P_{\mathrm{raw}}(r)
-  \;\le\; Q_{\mathrm{sel}} \cdot 2^{-132.13} \quad (\text{99\% LCB at } q_s \le 2^{32}).
-\end{equation}
-(Note that at $q_s = 2^{32}$, even the single busiest address across all $2^{33}$ leaves has expected max occupancy $\approx 13$, where $2^{-33} \cdot P_{\mathrm{raw}}(13) \approx 2^{-33 - 99.05} = 2^{-132.05}$.)
-
-\section{Single-User Classical ROM+PRF EUF-CMA Reduction}
-\label{sec:security}
-
-We now connect the deterministic Lean~4 witness dichotomy (\cref{sec:lean}) to a clean, explicitly scoped \textbf{classical single-user ROM+PRF} EUF-CMA security bound. We model the keyed public hash family $\Keyed(K_{\mathrm{pub}}, \cdot)$ (over all eight tweak kinds), $\Keyed(K_{\mathrm{content}}, \cdot)$, and $\Keyed(K_{\mathrm{msg}}, \cdot)$ as domain-separated random oracles (justified by distinct keys and injective tweaks proved in \texttt{Tweaks.lean}), and model $\Derive(\cdot, \mathsf{seed})$, $\Keyed(K_{\mathrm{sec}}, \cdot)$, $\Keyed(K_{\mathrm{salt}}, \cdot)$, and $\Keyed(K_R, \cdot)$ as PRFs (so secret chain starts, salts, and randomizers are replaced by independent uniform values in standard PRF hybrids).
-
-\begin{theorem}[Classical Single-User ROM+PRF EUF-CMA Bound for \BLINCS{}]
-\label{thm:euf-cma-rom}
-Let $\mathcal{A}$ be any classical adversary making at most $q_s \le 2^{32}$ adaptive chosen-message signing queries (where each honest query commits $(\mathsf{ctx}_j, M_j)$ before learning the fresh salt $e_j$) and at most $Q_H$ offline queries to the random-oracle hash functions. Under independent-output PRF hybrids for $\Derive$, $K_{\mathrm{sec}}$, $K_{\mathrm{salt}}$, and $K_R$,
-\begin{align}
-\label{eq:euf-cma-rom}
-  \Adv^{\mathrm{EUF\text{-}CMA}}_{\BLINCS}(\mathcal{A})
-  \;\le\;&
-    \Adv^{\mathrm{PRF}}_{\mathrm{KDF}} + \Adv^{\mathrm{PRF}}_{K_{\mathrm{sec}}} + \Adv^{\mathrm{PRF}}_{K_{\mathrm{salt}}} + \Adv^{\mathrm{PRF}}_{K_R}
-    \;+\; \frac{q_s(q_s - 1)}{2^{129}} \;+\; \epsilon_{\mathrm{exhaust}}(q_s) \nonumber \\
-  &+\; \underbrace{\frac{Q_H + q_s}{2^{256}}}_{\substack{\text{Events (1)--(3):}\\ 256\text{-bit RO hits}}}
-    \;+\; \underbrace{\frac{Q_H}{2^{128}}}_{\substack{\text{Events (4)--(7), (9)--(11):}\\ \text{same-tweak } 128\text{-bit 2PR}}} \nonumber \\
-  &+\; \underbrace{\frac{Q_H}{2^{128}}}_{\substack{\text{Events (8), (12):}\\ \text{unrevealed chain}}}
-    \;+\; \underbrace{Q_H \cdot \mathbb{E}[P_{\mathrm{raw}}(R_{\mathrm{occ}})]}_{\substack{\text{Event (13):}\\ \text{\UPORS{} cover \eqref{eq:rom-upors}}}}.
-\end{align}
-\end{theorem}
-
-\begin{proof}[Proof sketch]
-\emph{Step 1 (PRF hybrids and salt/exhaustion aborts):} Replace the six $\Derive(\cdot, \mathsf{seed})$ outputs by independent uniform keys (releasing $\mathsf{pk\_seed}$), replace $\Keyed(K_{\mathrm{sec}}, \cdot)$ by uniform secret chain starts, and replace $\Keyed(K_{\mathrm{salt}}, \cdot)$ and $\Keyed(K_R, \cdot)$ by independent uniform random functions. On $q_s$ fresh signing draws, salt repeats occur with probability at most $q_s(q_s - 1) / 2^{129}$ (note: even on a salt repeat, distinct $(\mathsf{ctx}, M)$ still yields distinct inputs to $K_R$ unless a $256$-bit $h_{\mathrm{msg}}$ collision occurs, per \texttt{rng\_failure\_hedged\_fallback}; we charge $q_s^2 / 2^{129}$ conservatively when bounding Event~(1) under fresh-salt TCR). Honest sampler exhaustion across $q_s$ signatures and $4$ layers has probability $\epsilon_{\mathrm{exhaust}}(q_s) \le 4 q_s \cdot 2^{-370} + q_s \cdot 2^{-4.7 \times 10^6} + q_s \cdot 2^{-10^6}$, which is negligible.
-
-\emph{Step 2 (Deterministic witness extraction):} Conditioned on no honest exhaustion, whenever $\mathcal{A}$ outputs a valid fresh forgery $(\mathsf{ctx}^*, M^*, \sigma^*)$, \texttt{blincs\_forgery\_dichotomy} (\cref{sec:lean}) deterministically produces one of $13$ provenance- and target-bound witnesses:
-\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
-  \item \emph{Events (1)--(3) ($256$-bit digests $h_{\mathrm{msg}}$, $D_{\mathrm{seed}}$, $H_{\mathrm{sel}}$):} Each witness matches an honest $256$-bit random-oracle output on a distinct input (Event~(1) fixes the same $e_q, \mathsf{ctx}_q$ with $M^* \neq M_q$, committed before $e_q$ is revealed). Across $Q_H$ offline queries, each query hits any existing target with probability $\le 1/2^{256}$ (or birthday $\le (Q_H + q_s)^2 / 2^{257}$ if collisions among offline queries are counted; target hits onto the $q_s$ honest digests cost at most $q_s Q_H / 2^{256} \le Q_H / 2^{224}$).
-  \item \emph{Events (4)--(7) and (9)--(11) (tweak-addressed $128$-bit second preimages):} Every tweak uniquely encodes $(\mathsf{kind}, \ell, \mathsf{tree}, \mathsf{leaf}, a, b)$. For any single offline RO query $q$, its tweak determines \emph{at most one} honest target output in the entire scheme (whether previously signed or lazily generated along the forgery path: e.g.\ one honest child pair at $(\ell, \mathsf{tree}, \mathsf{lvl}, p)$, one honest leaf endpoint vector at $(\ell, \mathsf{tree}, \mathsf{leaf})$, one honest child root + minimal counter at $(\ell, \mathsf{tree}, \mathsf{leaf})$, or one honest chain node $x_s$ at $(\ell, \mathsf{tree}, \mathsf{leaf}, c, s)$). Because the adversary's input is distinct from that single honest input, a single RO query hits that target with probability exactly $2^{-128}$ (zero multi-target factor in the ROM!). Summing over all $Q_H$ queries yields $\le Q_H / 2^{128}$.
-  \item \emph{Events (8) and (12) (unrevealed chain preimages):} In Event~(8), $\mathcal{A}$ outputs the exact honest node $x_{d^*}$ at depth $d^* < d_{\mathrm{honest}}$ along an \SWOTS{} chain; in Event~(12), $\mathcal{A}$ outputs $x_{d^*}$ on a \UPORS{} chain never revealed at any depth $\le d^*$. In both cases $x_{d^*}$ is information-theoretically hidden behind $x_{d^*+1} = H(\Tweak, x_{d^*})$ (or behind the secret chain start when $d^* = 0$, or behind the leaf hash if $d^* = w - 1$ was never revealed). Each offline RO query evaluates at most one candidate preimage against the single honest successor at that tweak, succeeding with probability $\le 2^{-128}$, giving $\le Q_H / 2^{128}$.
-  \item \emph{Event (13) (\UPORS{} cover):} Bounded directly by \eqref{eq:rom-upors}: $\le Q_H \cdot 2^{-132.13}$ ($99\%$ LCB at $q_s \le 2^{32}$).
-\end{itemize}
-Summing the disjoint event bounds gives \eqref{eq:euf-cma-rom}.
+\begin{proof}
+At $t = 0$ both sides vanish. For $t \in \{1, \dots, 16\}$, dividing both sides of $1 - q_\calC(t) \ge 1 - u_3(t)$ by $4^t$ yields the exact integer inequality
+\[
+  5546 \cdot 25^t \cdot D(t) \;\ge\; 376 \cdot 94^t \cdot (7495 \cdot 79^t - 1949 \cdot 20^t),
+\]
+verified with equality at $t = 1$ and non-strict inequality for $t \in \{2,\dots,16\}$ in exact $256$-bit integer arithmetic inside \texttt{tools/upors\_cert.rs}. For all $t \ge 16$, exactly $15$ codewords $v \in \calC$ have a zero coordinate, and for each such coordinate $371$ codewords satisfy $d_i > 0$, giving $1 - q_\calC(t) \ge \frac{15}{376}(\frac{371}{376})^t$. Since $\frac{371}{376} > \frac{79}{100}$ and $\frac{15}{376}(\frac{371}{376})^{16} > \frac{7495}{5546}(\frac{79}{100})^{16}$ (checked in exact $256$-bit integers), $1 - q_\calC(t) > \frac{7495}{5546}(\frac{79}{100})^t > 1 - u_3(t)$ holds for every integer $t \ge 16$.
 \end{proof}
 
-\paragraph{Honest scope vs.\ standard-model reductions.}
-Earlier drafts proposed a standard-model SM-TCR/DM-SPR lifting equation and a ``generous'' preimage-to-2PR theorem with factor $\tfrac12\varepsilon\delta$. We deliberately retract both: (i)~the $\tfrac12\varepsilon\delta$ bound erroneously multiplied marginals without ruling out inversion concentrating on singleton fibers, and (ii)~grinding-selected targets (\texttt{FEW\_SELECT}, \texttt{ONE\_TIME\_MSG}) and correlated tree nodes do not trivially embed into plain uniform-challenge SM-TCR/DM-SPR games without explicit simulations. In the classical ROM+PRF model above, the per-query security exponent at $q_s \le 2^{32}$ is governed cleanly by $\approx 2^{-127}$ per offline hash query (so constant forgery advantage requires $Q_H \approx 2^{127}$ offline queries), while the salt birthday term $q_s^2 / 2^{129} \approx 2^{-65}$ bounds only the negligible event of a repeated salt within $2^{32}$ signatures (on which content hashing falls back cleanly to $128$-bit known-salt collision resistance of $256$-bit keyed \BLAKE{}, not an attack).
+Fix target $S^* = \{s_1, \dots, s_9\} \in \calF$, let $p_{S^*}(A) = \Pr_{D \sim \Unif(\calF)}[D \cap S^* = A]$ ($512$ subsets $A \subseteq S^*$), and define $G_{S^*,\mu}(\mathbf{z}) = \sum_{A \subseteq S^*} p_{S^*}(A) \prod_{i \in A} z_i$. Writing $(z_0, z_1, z_2) = (1, \frac{79}{100}, \frac{20}{100})$ and $(c_0, c_1, c_2) = (1, -\frac{7495}{5546}, \frac{1949}{5546})$, \cref{lem:envelope} and independence \emph{across} the $R_{\mathrm{occ}} \sim \mathrm{Bin}(q_s, 2^{-h})$ ideal historical signatures (with zero independence or negative-association assumption across the $9$ coordinates $T_i$) yield the closed-form binomial upper-envelope mixture:
+\begin{align}
+\label{eq:exact-binom}
+  \mathbb{E}_{R_{\mathrm{occ}}}[P_{\mathrm{raw}}(R_{\mathrm{occ}})]
+  &\;\le\; p_{\mathrm{cap}} \cdot \mathbb{E}_{S^* \sim \Unif(\calF)}\!\left[
+    \sum_{\mathbf{j} \in \{0,1,2\}^9} c_{\mathbf{j}}\, \Big(1 - 2^{-h}\big(1 - G_{S^*,\mu}(\mathbf{z}_{\mathbf{j}})\big)\Big)^{q_s}
+  \right] \nonumber \\
+  &\;=\; p_{\mathrm{cap}} \sum_{k=1}^{K_{\mathrm{pow}}} (-1)^k \binom{q_s}{k} 2^{-hk} \, \overline{M}_k \;+\; R_{K_{\mathrm{pow}}},
+\end{align}
+where $c_{\mathbf{j}} = \prod_{i=1}^9 c_{j_i}$, the $k = 0$ term vanishes identically because $\sum_{j=0}^2 c_j = u_3(0) = 0$, and the exact all-orbits $k$-th moment is
+\[
+  \overline{M}_k \;=\; \frac{1}{|\calF|} \sum_{S^* \in \calF} \sum_{\mathbf{j} \in \{0,1,2\}^9} c_{\mathbf{j}}\, \big(1 - G_{S^*,\mu}(\mathbf{z}_{\mathbf{j}})\big)^k.
+\]
+Crucially, for every $S^* \in \calF$ and $\mathbf{z} \in [0, 1]^9$, union bounding over the $9$ leaves gives $0 \le u_{\mathbf{j}} = 1 - G_{S^*,\mu}(\mathbf{z}_{\mathbf{j}}) \le 9 \cdot \frac{9}{2048} = \frac{81}{2048} < 0.04$. Whenever $(q_s - K_{\mathrm{pow}} - 1)\frac{81}{2048} < (K_{\mathrm{pow}} + 2) 2^h$ (checked directly for every evaluated $(h, q_s)$), each tuple's binomial tail alternates with strictly decreasing magnitude for $k \ge K_{\mathrm{pow}} + 1$, so by the Leibniz test,
+\[
+  |R_{K_{\mathrm{pow}}}| \;\le\; p_{\mathrm{cap}} \cdot \left(\sum_{\mathbf{j}} |c_{\mathbf{j}}|\right) \cdot \binom{q_s}{K_{\mathrm{pow}} + 1} 2^{-h(K_{\mathrm{pow}} + 1)} \left(\frac{81}{2048}\right)^{K_{\mathrm{pow}} + 1},
+\]
+with exact integer-verified coefficient $\ell_1$-norm bound $\sum_{\mathbf{j}} |c_{\mathbf{j}}| = (1 + \frac{7495 + 1949}{5546})^9 = (\frac{14990}{5546})^9 \approx 7{,}698.27 < \mathbf{7{,}700}$ ($14990^9 < 7700 \cdot 5546^9$ asserted in $u128$). At $K_{\mathrm{pow}} = 44$, the capped remainder satisfies $|R_{44}| < 2^{-299}$ at $\lambda = 1$, $< 2^{-205}$ at $\lambda = 8$, and $< 2^{-201}$ at $\lambda = 20$.
 
-\section{Spec-Exact Lean~4.36.0 Formalization}
-\label{sec:lean}
+\paragraph{Exhaustive all-orbits kernel and exact rational-interval certification.}
+Because $G_{S^*,\mu}$ depends on $S^*$ only up to $\mathrm{Aut}(T_{11})$, \texttt{tools/upors\_\allowbreak cert.rs} enumerates \emph{all} \textbf{$1{,}614{,}132$ $\mathrm{Aut}(T_{11})$-orbits} of $\calF$ (verifying $\sum_{\mathcal{O}} |\mathcal{O}| = |\calF|$), computes exact $u128$ joint counts $p_{S^*}(A)$ via memoized prefix-sum tree DP (cross-checked against unoptimized height-$11$ DP, against brute-force enumeration on $H = 4, K = 3, m_{\max} = 6$ with relative agreement $1.09 \times 10^{-14}$, and against the independent closed-form trinomial sum for uncapped $r = 2$ to $1.15 \times 10^{-16}$), and deduplicates depth-$1$ sibling pairs over the $19{,}682$ nonzero tuples ($\mathbf{j} \neq \mathbf{0}$, since $1 - G(\mathbf{1}) = 0$).
 
-The directory \texttt{formal/Blincs/} contains six zero-dependency Lean~4.36.0 modules (\texttt{Params}, \texttt{Tweaks}, \texttt{Wots}, \texttt{Merkle}, \texttt{Scheme}, \texttt{Reduction}) verified in CI with zero \texttt{sorry}, zero \texttt{native\_decide} (\texttt{Lean.ofReduceBool}), and zero custom axioms across $26$ \texttt{\#print axioms} checks.
+In the $256$-bit pure-fractional fixed-point kernel ($\varepsilon = 2^{-256}$): (i)~exact-floor ratio initialization incurs error $< \varepsilon$ per mask probability; (ii)~each Kronecker axis satisfies $E' \le 2E + \varepsilon$, giving error $\le 1{,}023\varepsilon$ after $9$ axes; (iii)~dropped lower diagonals in \texttt{mul\_fast} plus flooring incur $< 4\varepsilon$; and (iv)~with $|c_{\mathbf{j}}|/16 < 1$ and $\widehat{u}_{\mathbf{j}} \le 81/2048 + 1{,}023\varepsilon < 0.04$, the power recurrence satisfies $E' \le 0.04 E + 1{,}027$, preserving invariant $E \le 1{,}080\varepsilon$ across all $k = 1..44$. Summing over at most $19{,}683$ tuples, scaling by $16$, and averaging with positive orbit weights bounds every global moment error by $|\widehat{M}_k - \overline{M}_k| \le 16 \cdot 19{,}683 \cdot 1{,}080\,\varepsilon = 340{,}122{,}240 \cdot 2^{-256} < 2^{-227.5}$. Global sums $S_k = \sum_{\mathcal{O}} |\mathcal{O}| \cdot \widehat{M}_k(\mathcal{O}) \cdot 2^{256}/16$ are accumulated without overflow in exact $448$-bit signed integers (archived in \texttt{tools/upors\_cert.rs} for $< 1\text{ s}$ \texttt{--fast} CI checking and verified bit-for-bit on full recomputation).
 
-\paragraph{Byte-for-byte specification alignment.}
-Every hash call in \texttt{Scheme.lean} matches \texttt{SPEC.md §§4--11} verbatim over an abstract deterministic \texttt{HashOracle}:
-\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
-  \item \texttt{chainStart}: $\Tweak(1, \ell, \mathsf{tree}, 0, 0, \mathsf{leaf}\cdot n_c + c)$, empty data;
-  \item \texttt{wotsMsgHash}: $\Tweak(5, \ell, \mathsf{tree}, \mathsf{leaf}, 0, 0)$, data $\mathsf{msg} \parallel \mathrm{u32\_le}(\mathrm{ctr}_\ell)$;
-  \item \texttt{fewSelectDigest}: $\Tweak(7, \mathtt{0x80}, 0, 0, 0, 0)$, data $D_{\mathrm{seed}} \parallel \mathrm{u32\_le}(\mathrm{ctr}_{\mathrm{ft}})$;
-  \item \texttt{extractUporsLeaves} / \texttt{extractLeafAddr}: scans up to $22$ consecutive $10$-bit draws from bits $0..220$ skipping duplicates to collect $10$ strictly sorted distinct leaves (\texttt{extractUporsLeaves\_\allowbreak spec} proves \texttt{length = 10} and \texttt{Nodup}), and reads the $33$-bit $\mathsf{leaf\_addr}$ from bits $220..253$;
-  \item \texttt{extractUporsCodes}: hashes $\Tweak(8, \mathtt{0x80}, 0, 0, \mathsf{blk}, 0) \parallel D_{\mathrm{seed}} \parallel \mathrm{u32\_le}(\mathrm{ctr}_{\mathrm{ft}})$ for $\mathsf{blk} < 65536$, returning \texttt{Option} (failing closed as \texttt{none} on exhaustion rather than defaulting to index $0$).
-\end{itemize}
-
-\paragraph{Key mechanically verified theorems.}
-\begin{enumerate}[leftmargin=1.4em,itemsep=2pt]
-  \item \textbf{Direct \texttt{sliceCount} cardinality (\texttt{Wots.lean}):} Theorem \texttt{sliceCount\_eq\_\allowbreak spernerIE} proves $(\texttt{sliceCount}\ w\ n\ s : \mathbb{Z}) = \text{IE}(w, n, s)$ for all $w \ge 1, n \ge 1, s \ge 0$ via windowed Hockey-Stick and Pascal identities, yielding \texttt{wots\_sperner\_\allowbreak cardinality} directly on \texttt{sliceCount 40 24 468} and \texttt{wotsRank\_lt\_\allowbreak sliceCount} (eliminating any rank premise from \texttt{ValidWotsHash}).
-  \item \textbf{Wire round-trip bijectivity (\texttt{Scheme.lean}):} Four theorems prove exact wire length (\texttt{encodeImprint\_\allowbreak length} $= 3{,}292$), injectivity (\texttt{encodeImprint\_\allowbreak injective}), parser round-trip (\texttt{decodeImprint\_\allowbreak encodeImprint}, showing $\texttt{decodeImprint}(\texttt{encodeImprint}\ \sigma) = \texttt{some}\ \sigma$), and length rejection (\texttt{decodeImprint\_\allowbreak bad\_len} for any input length $\neq 3{,}292$).
-  \item \textbf{Conditional completeness (\texttt{Scheme.lean}):} Theorem \texttt{blincs\_\allowbreak completeness} proves that given valid counters and non-exhausted \texttt{FEW\_CODE}, \texttt{imprintWithCounters} verifies cleanly (including Octopus recovery and canonical trailing zero-padding).
-  \item \textbf{Target-bound \& provenance-bound $13$-witness dichotomy (\texttt{Merkle.lean}, \texttt{Wots.lean}, \texttt{Reduction.lean}):} Theorem \texttt{blincs\_forgery\_\allowbreak dichotomy} takes a physical-address-indexed counter table $\texttt{honestCtr} : \mathrm{Fin}\ 4 \to \mathbb{N} \to \mathbb{N} \to \mathrm{UInt16}$ required \emph{only} along the forged address's $4$-layer path. Every Merkle, Octopus, leaf, and chain collision witness exports the exact honest \texttt{treeNodeAt} or \texttt{chainIter} target on one side, while \texttt{ForgeryWitness.\allowbreak uporsCover} binds $(\mathsf{leafAddr}^*, \mathsf{leaves}^*, \mathsf{codes}^*)$ directly to the fresh parsed forged digests (\texttt{hFreshSeed}, \texttt{hFreshSel}, \texttt{hLeaves}, \texttt{hCodes}, \texttt{hNodup}).
-  \item \textbf{Deterministic salt-reuse separation (\texttt{Reduction.lean}):} \texttt{rng\_failure\_\allowbreak hedged\_fallback}.
-\end{enumerate}
-
-\paragraph{Explicit boundary of the Lean formalization.}
-The Lean development is a \emph{deterministic reconstruction, parser, combinatorial, and provenance-bound witness formalization} over arbitrary deterministic \texttt{HashOracle}s; it does not formalize probability distributions, RO query games, PRF hybrids, constant-time execution, or refinement to the optimized Rust boxcar/hexagon implementations. Those probabilistic and implementation layers are established by \cref{sec:upors-security,sec:security} (\texttt{tools/upors\_cert.rs}) and differential KAT/mutation/WASM tests in \texttt{signet}.
-
-\section{Equal-Budget $q_s = 2^{64}$ Comparison Variants, Performance, and Quantum Analysis}
-\label{sec:comparison}
-
-\subsection{Scientific Exposition: Equal-Budget $q_s = 2^{64}$ Variants vs.\ \textsf{SLH-DSA-128s}}
-Comparing flagship \BLINCS{} ($3{,}292$~B, $q_s = 2^{32}$, $128\text{ KiB}$ top tree) directly against NIST FIPS~205 \textsf{SLH-DSA-128s} ($7{,}856$~B, $q_s = 2^{64}$, $0$ required / $16\text{ KiB}$ optional top tree) conflates three distinct axes: algorithmic compression (\SWOTS{}+\UPORS{}), lifetime budget ($2^{32}$ vs.\ $2^{64}$), and top-tree caching.
-
-To isolate each contribution cleanly for scientific exposition, we define two equal-budget $q_s = 2^{64}$ comparison parameterizations at the \emph{exact same} occupancy load $\lambda = q_s / 2^h = 0.5$ ($h = 65$, yielding the identical \UPORS{} cover bound $132.13\text{ b}$ $99\%$ LCB from \cref{tab:itsr}; the $65$-bit $\mathsf{leaf\_addr}$ is drawn from a second indexed \texttt{FEW\_SELECT} block, adding $1$ compression):
-\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
-  \item \textbf{\BLINCSsixfour{} (equal $q_s = 2^{64}$ AND equal $16\text{ KiB}$ top cache to \textsf{SLH-DSA-128s}):} $d = 8$, heights $9 + 7 \times 8 = 65$, identical \SWOTS{} and \UPORS{} $\implies$ \textbf{$5{,}348$~B} ($-2{,}508$~B $= \mathbf{-31.9\%}$ vs.\ \textsf{SLH-DSA-128s} at identical $q_s = 2^{64}$ and identical $16\text{ KiB}$ top cache!), $1.81\text{M}$ warm sign compressions ($\approx 16.7\text{ ms}$ est.\ M6, $7.3\times$ faster than $1$-core \textsf{SLH-DSA-BLAKE3-128s}), $4{,}212$ verify compressions.
-  \item \textbf{\BLINCSsixfours{} (equal $q_s = 2^{64}$, equal $d = 7$ to \textsf{SLH-DSA-128s}):} $d = 7$, heights $11 + 6 \times 9 = 65$ ($64\text{ KiB}$ top tree) or $12 + 8 + 5 \times 9 = 65$ ($128\text{ KiB}$ top tree) $\implies$ \textbf{$4{,}962$~B} ($-2{,}894$~B $= \mathbf{-36.8\%}$ vs.\ \textsf{SLH-DSA-128s}!), $2.81$--$3.05\text{M}$ warm sign compressions ($\approx 26$--$28\text{ ms}$ est.\ M6), $3{,}736$ verify compressions.
-\end{itemize}
-\Cref{tab:compare} presents the full matched ablation alongside \textsf{SLH-DSA-128s/f} and earlier \textsf{BLINCS-128-7x5}. \emph{Scope note:} \BLINCSsixfour{} and \BLINCSsixfours{} are introduced strictly for scientific comparison; all practical engineering, product design, optimization, security hardening, Lean~4 formalization, and shipped implementations (\texttt{signet}, \texttt{git-signet}) focus exclusively on flagship \BLINCS{} ($q_s \le 2^{32}$, $3{,}292$~B).
+To eliminate all floating-point cancellation and rounding uncertainty in the final bounds, \texttt{tools/upors\_cert.rs} evaluates \eqref{eq:exact-binom} directly from the exact $448$-bit integers $S_1,\dots,S_{44}$ in arbitrary-precision \texttt{BigInt} rational interval arithmetic (zero \texttt{f64} in the final bounds): notice that $|\calF|$ cancels identically in $p_{\mathrm{cap}}\widehat{M}_k = 16 S_k / (2^{256}\binom{2048}{9})$, so every term $k = 1..44$ (with $+340{,}122{,}240|\calF|$ added strictly upward to $(-1)^k 16 S_k$ before multiplying by exact integer $\binom{q_s}{k}$) and the exact rational Leibniz remainder ($7{,}700|\calF|\binom{q_s}{45} 81^{45} 2^{256}$) share the single common denominator $\binom{2048}{9} 2^{256 + 45h + 495}$. Each printed probability $P_{\mathrm{UB}}(h, q_s)$ is rounded outward (upward ceiling) in exact \texttt{BigUint} arithmetic; each printed bit lower bound $b = n + r/10^4$ is certified outward (downward floor) in exact \texttt{BigUint} arithmetic via the odd-truncated Taylor lower bound $T_{19}(\frac{r}{10^4} L_{\mathrm{hi}}) < 2^{-r/10^4}$ ($L_{\mathrm{hi}} = \lceil 10^{20}\ln 2\rceil / 10^{20}$); and the $96$-bit threshold certifies the adjacent integer comparisons $P_{\mathrm{UB}}^{\mathrm{rat}}(48, q_{96}) \cdot 2^{96} \le 1 < P_{\mathrm{UB}}^{\mathrm{rat}}(48, q_{96} + 1) \cdot 2^{96}$, with all seven table strings and $q_{96}$ actively asserted in CI (\texttt{--fast}, $0.23\text{ s}$).
 
 \begin{table}[t]
 \centering
 \footnotesize
 \setlength{\tabcolsep}{3.5pt}
-\caption{Matched ablation and single-core comparison on Apple~M6 (macOS arm64, Rust~1.100.0). \textsf{SLH-DSA} rows reproduce PQC Suite~B (\texttt{b392fe82}, \texttt{RAYON\_NUM\_THREADS=1}); \BLINCS{} is measured in \texttt{signet} (\texttt{9004ffcf}, \texttt{blake3-servil-core 0.11.0}, \texttt{clocks}, $n = 40$--$30{,}840$, $0$--$1\%$ E-cores); $q_s = 2^{64}$ \BLINCSsixfour{}/\BLINCSsixfours{} timings are compression-scaled estimates.}
-\label{tab:compare}
-\begin{tabular}{@{}lrrrrrr@{}}
+\caption{Zero-Monte-Carlo, exact-\texttt{BigInt} outward-rounded all-$1{,}614{,}132$-orbits $3$-term upper-envelope bounds on one raw fresh \UPORS{} candidate ($P_{\mathrm{UB}}(h, q_s)$ rounded strictly up; bit lower bounds $-\log_2 P_{\mathrm{UB}}(h, q_s)$ certified strictly down via \texttt{tools/upors\_cert.rs}, $K_{\mathrm{pow}} = 44$, exact integer $\binom{q_s}{k}$). Both columns are upper envelopes using $u_3 \ge q_\calC$, not exact $q_\calC$ probabilities. For $q' \le q_s$, monotonicity gives $P_{\mathrm{UB}}(h, q') \le P_{\mathrm{UB}}(h, q_s)$.}
+\label{tab:itsr}
+\begin{tabular}{@{}rcc@{}}
 \toprule
-Scheme & $q_s$ & Cache & Sig (B) & vs.\ 128s & Sign 64~B (1c) & Verify 64~B \\
+$(h, q_s)$ & Capped Envelope UB (\texttt{Cap+Cap}) & Uncapped Envelope UB (\texttt{Unc+Unc}) \\
 \midrule
-\textsf{SLH-DSA-SHA2-128s} (FIPS 205) & $2^{64}$ & $0$ ($16$~KiB) & $7{,}856$ & $0\%$ & $75.5\text{ ms}$ & $74.4\;\mu\text{s}$ \\
-\textsf{SLH-DSA-BLAKE3-128s} (1c) & $2^{64}$ & $0$ ($16$~KiB) & $7{,}856$ & $0\%$ & $121.7\text{ ms}$ & $126.6\;\mu\text{s}$ \\
-\textsf{SLH-DSA-BLAKE3-128f} (1c) & $2^{64}$ & $0$ & $17{,}088$ & $+117.5\%$ & $5.81\text{ ms}$ & $353.7\;\mu\text{s}$ \\
-\textsf{BLINCS-128-7x5} (v0.2 draft) & $2^{32}$ & $1\text{ KiB}$ & $6{,}432$ & $-18.1\%$ & $1.22\text{ ms}$ & $36.2\;\mu\text{s}$ \\
+$(48, 2^{46})$ ($0.25\times$) & $\ge 141.7220\text{ b}$ ($P \le 2.1748 \times 10^{-43}$) & $\ge 138.8182\text{ b}$ ($P \le 1.6276 \times 10^{-42}$) \\
+$(48, 2^{47})$ ($0.50\times$) & $\ge 137.1012\text{ b}$ ($P \le 5.3506 \times 10^{-42}$) & $\ge 133.8571\text{ b}$ ($P \le 5.0697 \times 10^{-41}$) \\
+$\mathbf{(48, 2^{48})}$ \textbf{(budget)} & $\mathbf{\ge 131.7076\text{ b}}$ ($\mathbf{P \le 2.2493 \times 10^{-40}}$) & $\ge 127.9743\text{ b}$ ($P \le 2.9914 \times 10^{-39}$) \\
+$(48, 2^{49})$ ($2.00\times$) & $\ge 125.3590\text{ b}$ ($P \le 1.8330 \times 10^{-38}$) & $\ge 120.9424\text{ b}$ ($P \le 3.9148 \times 10^{-37}$) \\
+$(48, 2^{50})$ ($4.00\times$) & $\ge 117.8522\text{ b}$ ($P \le 3.3338 \times 10^{-36}$) & $\ge 112.5196\text{ b}$ ($P \le 1.3434 \times 10^{-34}$) \\
+$(48, 2^{51})$ ($8.00\times$) & $\ge 108.9894\text{ b}$ ($P \le 1.5521 \times 10^{-33}$) & $\ge 102.4964\text{ b}$ ($P \le 1.3980 \times 10^{-31}$) \\
 \midrule
-\BLINCSsixfour{} ($9{+}7{\times}8$, exp.) & $2^{64}$ & $16\text{ KiB}$ & $5{,}348$ & $-31.9\%$ & ${\approx}16.7\text{ ms}$ est. & ${\approx}72\;\mu\text{s}$ est. \\
-\BLINCSsixfours{} ($12{+}8{+}5{\times}9$, exp.) & $2^{64}$ & $128\text{ KiB}$ & $4{,}962$ & $-36.8\%$ & ${\approx}25.9\text{ ms}$ est. & ${\approx}64\;\mu\text{s}$ est. \\
-\textbf{\BLINCS{} ($12{+}7{+}7{+}7$, flagship)} & $\mathbf{2^{32}}$ & $\mathbf{128\text{ KiB}}$ & $\mathbf{3{,}292}$ & $\mathbf{-58.1\%}$ & $\mathbf{4.15\text{ ms}}$ & $\mathbf{39.1\;\mu\text{s}}$ \\
+$(64, 2^{64})$ ($1.00\times$) & $\ge 131.7076\text{ b}$ ($P \le 2.2493 \times 10^{-40}$) & $\ge 127.9743\text{ b}$ ($P \le 2.9914 \times 10^{-39}$) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Desktop Measurements and Auditable Cortex-M33 Model}
-\paragraph{Authors' Apple~M6 measurements (\texttt{signet}, commit \texttt{9004ffcf}).}
-On an Apple~M6 (macOS arm64, Rust~1.100.0, strictly single-threaded \texttt{blake3-servil-core 0.11.0}, measured via \texttt{bench-hashes}/\texttt{clocks}):
-\texttt{Signet::from\_seed} builds the $128\text{ KiB}$ top heap in \textbf{$31.97\text{ ms}$} ($141.40\text{M}$ cycles, $1.24$ IPC, $n = 40$); warm \texttt{Signet::imprint} ($64$~B, merging all $3 \times 128 \times 24 + 1{,}024 \times 3 = 12{,}288$ chains into a single-threaded SIMD super-wave plus full verification self-check) takes \textbf{$4.15\text{ ms}$} ($18.17\text{M}$ cycles, $1.39$ IPC, $n = 432$); zero-allocation \texttt{SignetId::verify} ($64$~B) takes \textbf{$39.1\;\mu\text{s}$} ($178.0\text{k}$ cycles, $7.04$ IPC, $n = 30{,}840$); $100\text{ MiB}$ single-pass slice signing/verifying runs at $5{,}568 / 6{,}993\text{ MB/s}$. Our standalone \texttt{\#![no\_std]} zero-alloc, zero-table verifier \texttt{crates/signet-verify} compiles to a freestanding $28.0\text{ KiB}$, zero-import \texttt{wasm32-unknown-unknown} binary verified under Node~24.
+\Cref{tab:itsr} confirms that while raw verifier filtering alone rejects $1 - p_{\mathrm{cap}}$ ($13.21\text{ b}$), clustering in honest $\Unif(\calF)$ histories eliminates most of that nominal factor at $q_s = 2^{48}$, yielding the certified single-raw-candidate upper-envelope bound $P_{\mathrm{UB}}(48, 2^{48}) \le 2.2493 \times 10^{-40}$ ($\ge 131.7076\text{ b}$). The unit-load rows $(48, 2^{48})$ and $(64, 2^{64})$ have distinct exact binomial laws that agree to all displayed digits. For extreme overuse, exact integer certification in \texttt{tools/upors\_cert.rs} verifies $P_{\mathrm{UB}}^{\mathrm{rat}}(48, q_{96}) \le 2^{-96} < P_{\mathrm{UB}}^{\mathrm{rat}}(48, q_{96}+1)$ at $q_{96} = 5{,}291{,}482{,}952{,}600{,}082$ ($\lambda \approx 18.7991$, $\approx 21.11\text{ Exabytes}$ of $3{,}990$-byte signatures; by monotonicity of true coverage, every $q \le q_{96}$ inherits the $\ge 96$-bit lower bound on the raw-query \UPORS{} cover exponent, which does not locate the exact crossing of the true probability or whole-scheme advantage).
 
-\paragraph{Auditable modeled $160\text{ MHz}$ Cortex-M33 budget (not measured on hardware).}
-Unlike the desktop super-wave (which allocates $\approx 1.1\text{ MiB}$ transient SIMD buffers), an embedded Cortex-M33 signer streams one leaf at a time via classic $O(h)$-stack Merkle \texttt{TreeHash} ($\approx 1.5\text{ KiB}$ working RAM, plus $7.5\text{ KiB}$ stack for boxcar Sperner unranking and $128\text{ KiB}$ Flash for the precomputed top tree built once at keygen). Warm signing performs $447{,}976$ fixed compressions ($3 \times 123{,}903$ for lower height-$7$ trees $+ 75{,}775$ for the height-$10$ \UPORS{} tree $+ 492$ for the active layer-$3$ \SWOTS{} chains) plus grinding ($4 \times 256 = 1{,}024$ mean / $2{,}570$ $p99$ for \SWOTS{}; $1{,}305$ mean / $6{,}009$ $p99$ for \UPORS{}), totaling $\approx 450{,}305$ mean and $\approx 456{,}000$ joint $p99$ compressions ($p99/\text{mean} = 1.013\times$). At a modeled $1{,}500$ cycles/compression ($9.375\;\mu\text{s}$ at $160\text{ MHz}$, leaving $\approx 18\%$ cycle headroom below the $1{,}754$-cycle ceiling for $5.0\text{ s}$ to cover loop overhead, unranking, and Flash reads), modeled warm $p99$ signing is $\approx 4.27\text{ s}$ (and verify is $\approx 21.3\text{ ms}$). Actual embedded timings depend on compiler codegen, Flash wait states, and DPA/FI countermeasures and remain unmeasured.
+\section{Single-User Classical ROM+PRF EUF-CMA Security Proof}
+\label{sec:security}
 
-\subsection{Quantum Security, Physical CRQC Costs, and Open Problems}
+\paragraph{Oracle model, interfaces, and query trace.}
+We analyze single-user EUF-CMA security in the classical Random-Oracle + PRF model with explicit oracle interfaces:
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item The four secret-seed derivations $\Derive(\mathsf{CTX}, \mathsf{seed}) \mapsto (K_{\mathrm{sec}}, K_{\mathrm{salt}}, K_R, \mathsf{pk\_seed})$ are modeled as a $4$-output PRF ($\Adv^{\mathrm{PRF}}_{\mathrm{KDF}}$); $\Keyed(K_{\mathrm{sec}}, \cdot)$, $\Keyed(K_{\mathrm{salt}}, \cdot)$, and $\Keyed(K_R, \cdot)$ are modeled as independent secret-keyed PRFs ($\Adv^{\mathrm{PRF}}_{K_{\mathrm{sec}}}, \Adv^{\mathrm{PRF}}_{K_{\mathrm{salt}}}, \Adv^{\mathrm{PRF}}_{K_R}$), with PRF distinguishers running in the time of $\mathcal{A}$ plus keygen and at most $q_s$ signing calls.
+  \item All non-secret \BLAKE{} evaluations---$\Derive(\mathsf{CTX}, X)$ for any context string $\mathsf{CTX}$ and $\Keyed(K, X)$ for arbitrary $32$-byte keys $K$---are answered by a \emph{single} unified random oracle $\mathcal{O}(\mathsf{mode}, K, X) \in \bits^{256}$ indexed by mode, key/context bytes, and full input bytes. Every $\mathcal{O}$-query made by $\mathcal{A}$ and by the final verification call $\mathsf{Verify}(\mathsf{SignetId}, \mathsf{ctx}^*, M^*, \sigma^*)$ is recorded in an ordered query table $\mathcal{T}$ of size $|\mathcal{T}| \le Q_H$. Let $Q_{\mathrm{sel}} \le Q_H$ be the number of distinct fresh \texttt{FEW\_SELECT} queries in $\mathcal{T}$.
+\end{itemize}
+
+\begin{theorem}[Classical Single-User ROM+PRF EUF-CMA Bound for \BLINCS{}]
+\label{thm:euf-cma-rom}
+Let $\mathcal{A}$ be any classical EUF-CMA adversary making at most $q_s \le 2^{48}$ adaptive signing queries (with independent uniform $256$-bit $\mathsf{draw}_j \sim \Unif(\bits^{256})$, committing $(\mathsf{ctx}_j, M_j)$ before learning $e_j$ per \texttt{SPEC.md §7}) and at most $Q_H$ total whole-input $\mathcal{O}$-queries (including final verification). Let $V \subset \bits^{256}$ be the set of cap-valid \texttt{FEW\_SELECT} digests ($|V| = \alpha p_{\mathrm{cap}} 2^{256} \approx 2^{242.79}$), and let $P_{\mathrm{UB}}(48, q_s)$ be the certified single-raw-candidate upper-envelope bound of \cref{tab:itsr} ($P_{\mathrm{UB}}(48, 2^{48}) \le 2.2493 \times 10^{-40}$). Then
+\begin{align}
+\label{eq:euf-cma-rom}
+  \Adv^{\mathrm{EUF\text{-}CMA}}_{\BLINCS}(\mathcal{A})
+  \;\le\;&
+    \Adv^{\mathrm{PRF}}_{\mathrm{KDF}} + \Adv^{\mathrm{PRF}}_{K_{\mathrm{sec}}} + \Adv^{\mathrm{PRF}}_{K_{\mathrm{salt}}} + \Adv^{\mathrm{PRF}}_{K_R}
+    \;+\; \varepsilon_{\mathrm{exh}}(q_s) \nonumber \\
+  &+\; \frac{4 Q_H}{2^{256}} + \frac{q_s(q_s - 1)}{2^{257}} + \frac{(Q_H + q_s + 5)^2}{2^{257}} + \frac{(Q_H + 2 q_s)^2}{2^{257}} \nonumber \\
+  &+\; \frac{2 q_s Q_H}{2^{256}} + \frac{Q_H(Q_H + 2 q_s)}{2^{256}}
+    \;+\; \frac{q_s(q_s - 1)}{2 \alpha p_{\mathrm{cap}} 2^{256}} + \frac{q_s Q_H}{\alpha p_{\mathrm{cap}} 2^{256}} \nonumber \\
+  &+\; \frac{2 Q_H}{2^{128}}
+    \;+\; Q_H \cdot P_{\mathrm{UB}}(48, q_s),
+\end{align}
+where $\varepsilon_{\mathrm{exh}}(q_s) \le 2^{49} (1 - p_{\mathrm{wots}})^{2^{24}} + q_s (1 - \alpha p_{\mathrm{cap}})^{2^{32}} + q_s \Pr[\mathrm{Bin}(28 \cdot 65536, 376/512) < 9] < 2^{-5{,}874}$.
+\end{theorem}
+
+\begin{proof}
+We construct an unconditioned ideal tape experiment and bound every discrepancy via first-conflict and first-hit couplings across four steps, starting from the real EUF-CMA game $\mathbf{G}_0$ with \texttt{signNormative}.
+
+\emph{Step 1 (PRF hybrids and unconditioned ideal tapes):}
+Replace $(\mathsf{seed} \mapsto (K_{\mathrm{sec}}, K_{\mathrm{salt}}, K_R, \mathsf{pk\_seed}))$ and $\Keyed(K_{\mathrm{sec}}, \cdot)$, $\Keyed(K_{\mathrm{salt}}, \cdot)$, $\Keyed(K_R, \cdot)$ by independent uniform strings and independent uniform random functions (cost $\Adv^{\mathrm{PRF}}_{\mathrm{KDF}} + \Adv^{\mathrm{PRF}}_{K_{\mathrm{sec}}} + \Adv^{\mathrm{PRF}}_{K_{\mathrm{salt}}} + \Adv^{\mathrm{PRF}}_{K_R}$). Before $\mathcal{A}$ begins, sample completely \emph{unconditioned}, mutually independent ideal tapes:
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt]
+  \item \emph{Honest signing tapes ($j \in \{1,\dots,q_s\}$):} an independent \texttt{FEW\_SELECT} output stream $(Y_{j, 0}, Y_{j, 1}, \dots) \stackrel{\text{i.i.d.}}{\sim} \Unif(\bits^{256})$ (defining the first valid index $c_j^*$, the accepted digest $H_{\mathrm{sel}, j} = Y_{j, c_j^*} \in V$, and the exact rejected prefix $Y_{j,0}, \dots, Y_{j, c_j^* - 1} \notin V$) paired with an independent \texttt{FEW\_CODE} block stream $(B_{j, 0}, B_{j, 1}, \dots) \stackrel{\text{i.i.d.}}{\sim} \Unif(\bits^{256})$ (defining all rejection positions, unused bits, and the $9$-codeword vector $C_j$). Conditional on non-exhaustion of the ideal streams, slot $j$ defines an i.i.d.\ ideal marked triple $(a_j, D_j, C_j) \sim \Unif([2^{48}]) \times \Unif(\calF) \times \Unif(\calC^9)$ forming the full list $\mathcal{H} = ((a_1, D_1, C_1), \dots, (a_{q_s}, D_{q_s}, C_{q_s}))$.
+  \item \emph{Raw adversarial \texttt{FEW\_SELECT} trial tapes ($t \in \{1,\dots,Q_{\mathrm{sel}}\}$):} an independent raw digest $Z_t \stackrel{\text{i.i.d.}}{\sim} \Unif(\bits^{256})$ paired with an independent \texttt{FEW\_CODE} block stream $(W_{t, 0}, W_{t, 1}, \dots) \stackrel{\text{i.i.d.}}{\sim} \Unif(\bits^{256})$.
+  \item \emph{Global physical \WOTSC{} tapes:} for each of the $\sum_{j=0}^{5} 2^{48 - 7j} < 2^{49}$ physical hypertree keys, its child root is fixed solely by tags $1$--$4$ (disjoint from tag $5$), independently of its $2^{24}$ tag-$5$ \texttt{ONE\_TIME\_MSG} digests.
+\end{itemize}
+In this unconditioned ideal tape space, define $\mathsf{Exh}$ as the union of any physical \WOTSC{} key failing $[0, 2^{24})$ or any honest slot $j \le q_s$ failing $[0, 2^{32})$ in $Y_j$ or $[0, 2^{16})$ in $B_j$. By union bound on the unconditioned tapes, $\Pr[\mathsf{Exh}] \le \varepsilon_{\mathrm{exh}}(q_s) < 2^{-5{,}874}$.
+
+\emph{Step 2 (First-conflict coupling $\mathsf{Conflict}$ for consistent table programming):}
+Run $\mathcal{A}$ while coupling $\mathcal{O}$ to the unconditioned tapes using a slot counter $s \in [0, q_s]$ (initially $0$) and a fresh raw-trial counter $r \in [0, Q_{\mathrm{sel}}]$ (initially $0$):
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt]
+  \item Whenever $\mathcal{A}$ queries the signing oracle on $(\mathsf{ctx}_i, M_i)$: if $(e_i, \mathsf{short}_i, R_i, D_{\mathrm{seed}, i})$ repeats an earlier signing query, replay that exact signature without advancing $s$ (revealing zero new leaves). Otherwise advance $s \gets s + 1$, program $(D_{\mathrm{seed}, s}, 0), \dots, (D_{\mathrm{seed}, s}, c_s^*)$ in $\mathcal{O}$ to $Y_{s, 0}, \dots, Y_{s, c_s^*}$, and program \texttt{FEW\_CODE}$(\mathsf{blk}, H_{\mathrm{sel}, s})$ in $\mathcal{O}$ to $B_{s, \mathsf{blk}}$ (subsequent reads by $\mathcal{A}$ of these programmed entries simply read the table and are \emph{never} conflicts!).
+  \item Whenever $\mathcal{A}$ or $\mathsf{Verify}$ issues a \texttt{FEW\_SELECT} query on an \emph{unoccupied} input $(D, c)$, advance $r \gets r + 1$, return $Z_r$, and if $Z_r \in V$ program \texttt{FEW\_CODE}$(\mathsf{blk}, Z_r)$ to $W_{r, \mathsf{blk}}$ (again, later reads of programmed entries are ordinary table reads, never conflicts).
+\end{itemize}
+Define $\mathsf{Conflict}$ as the \emph{first} event during execution that would either cause a secret/public oracle inconsistency, overwrite an already-occupied table entry, or merge distinct \texttt{FEW\_SELECT}/\texttt{FEW\_CODE} streams:
+\begin{enumerate}[leftmargin=1.4em,itemsep=1pt]
+  \item \emph{Secret-key / seed guess or derived-key value coincidence:} Some query in $\mathcal{T}$ supplies $\mathsf{seed}$ to \texttt{DERIVE} or $K \in \{K_{\mathrm{sec}}, K_{\mathrm{salt}}, K_R\}$ to \texttt{KEYED} ($\le 4 Q_H / 2^{256}$); or any pair of distinct evaluations among $\{K_{\mathrm{sec}}, K_{\mathrm{salt}}, K_R, K_{\mathrm{pub}}, K_{\mathrm{content}}\}$ and all queried $K_{\mathrm{msg}}$ produces equal $256$-bit key bytes ($\le (Q_H + q_s + 5)^2 / 2^{257}$). Absent this event, the secret-keyed random functions and public $\mathcal{O}$ are $100\%$ consistent.
+  \item \emph{Draw collision, pre-occupied \texttt{MESSAGE} input, $h_{\mathrm{msg}}/D_{\mathrm{seed}}$ collision, or pre-occupied \texttt{FEW\_SELECT} argument:}
+    (a)~Two signing queries sample the same $256$-bit $\mathsf{draw}_i = \mathsf{draw}_j$: $\le q_s(q_s - 1) / 2^{257}$. Absent a draw collision, every signing query feeds a strictly new input into the random function $K_{\mathrm{salt}}$, producing a fresh independent $e_i \sim \Unif(\bits^{128})$. Since $(\mathsf{ctx}_i, M_i)$ is committed before $e_i$ is disclosed (\texttt{SPEC.md §7}), for every fixed prior \texttt{MESSAGE} query $(R', e', h', \mathsf{ctx}') \in \mathcal{T}$, $e_i$ matches $e'$ with probability $2^{-128}$, and conditional on $e_i = e'$ any non-replay $(\mathsf{ctx}_i, M_i)$ feeds a fresh input into $K_R$ (\texttt{rng\_\allowbreak failure\_\allowbreak hedged\_\allowbreak fallback}) so $R_i$ independently matches $R'$ with probability $2^{-128}$---total product $2^{-256}$ per pair, or $\le q_s Q_H / 2^{256}$ across all pairs.
+    (b)~Distinct-input $256$-bit output collisions among $h_{\mathrm{msg}}$ or $D_{\mathrm{seed}}$ evaluations: $\le (Q_H + 2 q_s)^2 / 2^{257}$.
+    (c)~Because each new honest $D_{\mathrm{seed}, s}$ is freshly sampled in $\bits^{256}$ absent (a)--(b), the probability it matches the $D$-component of any \emph{previously queried} \texttt{FEW\_SELECT} entry $(D_0, c)$ in $\mathcal{T}$ is $\le q_s Q_H / 2^{256}$.
+  \item \emph{Time-ordered \texttt{FEW\_SELECT}/\texttt{FEW\_CODE} cross-hits (strictly against previously recorded entries):}
+    (a)~Two distinct honest accepted digests $H_{\mathrm{sel}, j} = H_{\mathrm{sel}, j'} \in V$: $\le \frac{q_s(q_s - 1)}{2 \alpha p_{\mathrm{cap}} 2^{256}}$ ($\approx 2^{-147.8}$).
+    (b)~A fresh honest accepted digest $H_{\mathrm{sel}, s} \sim \Unif(V)$ matching any \emph{previously recorded} valid \texttt{FEW\_SELECT} output $Z_{r'} \in V$ or \emph{previously queried} valid \texttt{FEW\_CODE} argument $H \in V$ in $\mathcal{T}$: $\le \frac{q_s Q_H}{\alpha p_{\mathrm{cap}} 2^{256}}$ ($\approx Q_H / 2^{194.8}$).
+    (c)~A fresh raw adversarial \texttt{FEW\_SELECT} output $Z_r \sim \Unif(\bits^{256})$ matching any \emph{previously queried} \texttt{FEW\_CODE} argument, any \emph{previously generated} raw \texttt{FEW\_SELECT} output $Z_{r'}$ ($r' < r$, preventing raw--raw $Z_{r'} = Z_r \in V$ code-stream overwrites!), or any \emph{previously generated} honest accepted $H_{\mathrm{sel}, s}$: since prior \texttt{FEW\_CODE} queries and prior raw \texttt{FEW\_SELECT} queries together belong to $\mathcal{T}$ (numbering at most $Q_H$), plus at most $q_s$ prior honest accepted digests (total $\le Q_H + q_s \le Q_H + 2 q_s$ prior targets per query), summing over all $r \le Q_{\mathrm{sel}} \le Q_H$ gives $\le \frac{Q_H(Q_H + 2 q_s)}{2^{256}}$.
+\end{enumerate}
+Up to $\mathsf{Conflict} \vee \mathsf{Exh}$, the coupled experiment reproduces the exact real distribution of $\mathbf{G}_0$ (after PRF replacement) with zero table overwrites, and rules out Events~(1)--(3) of \texttt{blincs\_forgery\_dichotomy} (including selection--selection and raw--raw code-programming conflicts).
+
+\emph{Step 3 (Path-trace extraction and online-frontier shadow bound for Events~(4)--(12)):}
+Suppose $\mathcal{A}$ outputs a verifying forgery $(\mathsf{ctx}^*, M^*, \sigma^*)$ and $\neg (\mathsf{Conflict} \vee \mathsf{Exh})$ holds, while Event~(13) (\UPORS{} cover) does not occur. Walking the actual recorded verification trace $\mathcal{T}$ of $\sigma^*$ downward from $\mathsf{root}$ extracts an explicit offending query \emph{inside $\mathcal{T}$} at its exact physical coordinate (strengthening the existential witness of \texttt{blincs\_forgery\_dichotomy} directly on the verifier's own computation):
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt]
+  \item Across hypertree layers $\ell = 5 \to 0$: if the verifier's child pair at a \texttt{NODE} or endpoint vector at \texttt{ONE\_TIME\_KEY} first diverges from the honest physical subtree, that exact query is evaluated by $\mathsf{Verify}$ and lies in $\mathcal{T}$ at its valid physical coordinate $p < 2^{h_\ell - \mathsf{lvl}}$. Otherwise, all endpoints match: if $(m^*, c^*) \neq (m_{\mathrm{hon}}, c_{\mathrm{hon}})$ with $H_\ell^*[0..16] = H_\ell^{\mathrm{hon}}[0..16]$, that exact \texttt{ONE\_TIME\_MSG} query lies in $\mathcal{T}$; if $H_\ell^* \neq H_\ell^{\mathrm{hon}}$, \texttt{wotsC\_dominance} yields a chain $c$ with $d_c^* < d_c^{\mathrm{hon}} \le 59$ (strictly below endpoint $59$), and stepping forward through $\mathsf{Verify}$'s \texttt{CHAIN} calls locates the first merging step $s \in [d_c^*, 58]$ in $\mathcal{T}$ (either submitting the honest node $v_{\mathrm{hon}}(c, s)$ for $s < d_c^{\mathrm{hon}}$ or producing a forward $128$-bit \texttt{CHAIN} collision).
+  \item On the \UPORS{} tree: walking the Octopus climb locates either an evaluated \texttt{NODE} or \texttt{ONE\_TIME\_KEY} collision in $\mathcal{T}$; otherwise all $9$ leaves match their honest hashes, and since Event~(13) failed, some target leaf $u^*$ has an uncovered coordinate. If $u^*$ was \emph{never} opened in any signing query, explicitly reselect a coordinate $c \in \{0, 1, 2\}$ with $d_c^* \le \lfloor 42 / 3 \rfloor = 14 < 23$ (also uncovered); if $u^*$ was opened, the uncovered coordinate satisfies $d_c^* < s_{\min}(c) \le 23$. In both cases $d_c^* < 23$ is strictly below the endpoint, so stepping forward along $\mathsf{Verify}$'s \texttt{CHAIN} calls on chain $c$ locates a sub-endpoint hidden \texttt{CHAIN} input hit or a forward $128$-bit \texttt{CHAIN} collision inside $\mathcal{T}$---avoiding any endpoint-vector guessing event at \texttt{ONE\_TIME\_KEY}.
+\end{itemize}
+To bound this event without post-miss conditional inflation or hindsight-frontier inconsistency, construct an \emph{online-frontier non-branching shadow experiment} $\mathbf{G}_3^{\mathrm{sh}}$:
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt]
+  \item \emph{Pre-sampled honest tree labels:} Before $\mathcal{A}$ begins, sample every physical chain's nodes $v_{\mathrm{hon}}(c, 0), \dots, v_{\mathrm{hon}}(c, w{-}1)$ as independent uniform $128$-bit strings (equivalently, each chain start $v_{\mathrm{hon}}(c, 0) \sim \Unif(\bits^{128})$ and each forward step $v_{\mathrm{hon}}(c, s{+}1) \sim \Unif(\bits^{128})$ on the honest input), together with all honest \texttt{ONE\_TIME\_KEY}, Merkle \texttt{NODE}, and honest-child \texttt{ONE\_TIME\_MSG} streams, fixing the unique honest target $Y_{\mathrm{hon}}(T)$ at every tweak $T$.
+  \item \emph{Online query-time sub-endpoint frontier $s_{\min}^{(r)}(c)$:} Track, for every physical chain $c$ (endpoint $w{-}1 \in \{59, 23\}$), the sub-endpoint frontier $s_{\min}^{(r)}(c) = \min(w{-}1,\, d_{\mathrm{discl}}^{(r)}(c))$, where $d_{\mathrm{discl}}^{(r)}(c)$ is the minimum step disclosed by signing queries strictly \emph{before} oracle query $q_r$ (or $w{-}1$ if $c$ has not yet been opened). Thus every step $s < s_{\min}^{(r)}(c)$ is strictly sub-endpoint ($s \le w{-}2$) and its label $v_{\mathrm{hon}}(c, s)$ never appears in any \texttt{ONE\_TIME\_KEY}, \texttt{NODE}, or \texttt{ONE\_TIME\_MSG} input. Whenever a signing query opens chain $c$ at step $d < s_{\min}(c)$, reveal $v_{\mathrm{hon}}(c, d)$ and its authentication path directly from the pre-sampled honest tree, lower $s_{\min}(c) \gets d$, and record the honest mappings for newly disclosed suffix steps $s \in [d, s_{\min}^{\mathrm{old}}(c))$ in the oracle table.
+  \item \emph{Non-branching shadow oracle responses:} When $\mathcal{A}$ or $\mathsf{Verify}$ submits query $q_r = (\mathtt{KEYED}, K_{\mathrm{pub}}, T \parallel X)$: (i)~if $q_r$ repeats an earlier entry in $\mathcal{T}$, return the recorded answer; (ii)~honor from the outset \emph{all} planted honest \texttt{NODE}, \texttt{ONE\_TIME\_KEY}, and honest-child \texttt{ONE\_TIME\_MSG} mappings (at the honest child $m_{\mathrm{hon}}$: returning the invalid honest prefix for $c < c_{\mathrm{hon}}$, the accepted $H_\ell^{\mathrm{hon}}$ for $c = c_{\mathrm{hon}}$, and the stored independent post-accepted digest for $c > c_{\mathrm{hon}}$), as well as every currently disclosed honest \texttt{CHAIN} entry ($X = v_{\mathrm{hon}}(c, s)$ with $s \ge s_{\min}^{(r)}(c)$); (iii)~otherwise ($q_r$ is a fresh query outside all mappings in (ii)), \emph{always} return a freshly sampled $U_r \stackrel{\text{i.i.d.}}{\sim} \Unif(\bits^{256})$ without inspecting or branching on any currently hidden sub-endpoint label $\{v_{\mathrm{hon}}(c, s) : s < s_{\min}^{(r)}(c)\}$.
+\end{itemize}
+Define the first-discrepancy event $\mathsf{Hit}$ on $\mathbf{G}_3^{\mathrm{sh}}$: some fresh query $q_r \in \mathcal{T}$ triggers either (a)~a \texttt{CHAIN} query at coordinate $(c, s)$ with $s < s_{\min}^{(r)}(c)$ (strictly sub-endpoint and below the frontier \emph{at query time}) whose input $X$ equals $v_{\mathrm{hon}}(c, s)$, or (b)~a fresh off-honest query (\texttt{NODE}, \texttt{ONE\_TIME\_KEY}, \texttt{ONE\_TIME\_MSG} with $m^* \neq m_{\mathrm{hon}}$ or $c^* > c_{\mathrm{hon}}$ [tested on its stored independent post-accepted digest], or \texttt{CHAIN} with $X \neq v_{\mathrm{hon}}(c, s)$) whose fresh output $U_r[0..16]$ matches $Y_{\mathrm{hon}}(T)$. Up to the first query triggering $\mathsf{Hit}$, $\mathbf{G}_3^{\mathrm{sh}}$ is \emph{identically distributed} to the coupled real game: all planted honest \texttt{NODE}, \texttt{ONE\_TIME\_KEY}, and honest-child \texttt{ONE\_TIME\_MSG} inputs are honored identically from the outset, no pre-query ever guessed a hidden sub-endpoint $v_{\mathrm{hon}}(c, s)$ prior to any later suffix release (so suffix programming never overwrites a prior answer), no off-honest query collided onto an honest target, and every repeat returns its recorded answer. Crucially, because all \texttt{NODE} and \texttt{ONE\_TIME\_KEY} mappings depend only on Merkle nodes and chain \emph{endpoints} $v_{\mathrm{hon}}(c, w{-}1)$---which are independent of all sub-endpoint labels $\{v_{\mathrm{hon}}(c, s) : s \le w{-}2\}$ in the pre-sampled tree---and $\mathbf{G}_3^{\mathrm{sh}}$ never branches on hidden sub-endpoint labels, at the instant query $q_r$ is submitted every currently hidden label $v_{\mathrm{hon}}(c, s)$ ($s < s_{\min}^{(r)}(c)$) is uniform in $\bits^{128}$ conditioned on $\mathcal{A}$'s entire view prior to $q_r$, and $U_r$ is freshly drawn independently of the view and $Y_{\mathrm{hon}}(T)$. Hence $\Pr_{\mathbf{G}_3^{\mathrm{sh}}}[\text{(a) at } q_r \mid \mathrm{view}_{< r}] \le 2^{-128}$ (only for \texttt{CHAIN}) and $\Pr_{\mathbf{G}_3^{\mathrm{sh}}}[\text{(b) at } q_r \mid \mathrm{view}_{< r}] \le 2^{-128}$; taking expectations and summing over all $|\mathcal{T}| \le Q_H$ queries proves unconditionally $\Pr[\mathsf{Hit}] \le 2 Q_H / 2^{128}$. Finally, because every hidden chain witness extracted above for Events~(4)--(12) is strictly sub-endpoint ($s \le 58 < 59$ for \WOTSC{}, $s \le 22 < 23$ for \UPORS{}), it satisfies either (a) (at the first query submitting $v_{\mathrm{hon}}(c, s)$ before its disclosure, or if never disclosed) or (b), giving $\{\text{Events~(4)--(12)} \wedge \neg(\mathsf{Conflict} \vee \mathsf{Exh})\} \subseteq \mathsf{Hit}$.
+
+\emph{Step 4 (Unconditioned ideal-tape inclusion for Event~(13)):}
+Finally, suppose Event~(13) occurs and $\neg (\mathsf{Conflict} \vee \mathsf{Exh})$ holds. Because $\neg \mathsf{Conflict}$ precludes any table overwrite or stream collision, the forged signature's $(D_{\mathrm{seed}}^*, \mathrm{ctr}_{\mathrm{ft}}^*)$ was evaluated at some fresh raw trial index $t \in \{1, \dots, Q_{\mathrm{sel}}\}$ (replays of honest accepted queries repeat an honest message/context and cannot be a fresh forgery, and reads of rejected entries fail $V$), receiving the unconditioned ideal tape output $(Z_t, W_t)$. Meanwhile, the signing transcript revealed only a prefix of length $s_{\mathrm{end}} \le q_s$ of the unconditioned ideal list $\mathcal{H}$. By \emph{monotonicity of coverage} under completing the prefix to all $q_s$ entries of $\mathcal{H}$, we obtain the exact set inclusion with \emph{zero conditioning on the right-hand side}:
+\[
+  \{\text{Event~(13)} \wedge \neg \mathsf{Conflict} \wedge \neg \mathsf{Exh}\}
+  \;\subseteq\;
+  \bigcup_{t=1}^{Q_{\mathrm{sel}}}
+    \big\{\text{unconditioned ideal trial } (Z_t, W_t) \text{ is covered by full } \mathcal{H}\big\}.
+\]
+For each fixed $t$, $(Z_t, W_t)$ is completely independent of the full $q_s$-entry ideal list $\mathcal{H}$, so \eqref{eq:exact-binom} and \cref{tab:itsr} give unconditional probability $\le \alpha P_{\mathrm{UB}}(48, q_s) \le P_{\mathrm{UB}}(48, q_s)$. Union bounding over all $Q_{\mathrm{sel}} \le Q_H$ trial indices yields $\Pr[\text{Event~(13)} \wedge \neg \mathsf{Conflict} \wedge \neg \mathsf{Exh}] \le Q_H \cdot P_{\mathrm{UB}}(48, q_s)$. Summing Steps~1--4 proves \eqref{eq:euf-cma-rom}.
+\end{proof}
+
+\begin{remark}[Concrete interpretation of \eqref{eq:euf-cma-rom}]
+At $q_s = 2^{48}$, the $V$-space terms evaluate to $q_s(q_s - 1)/(2\alpha p_{\mathrm{cap}} 2^{256}) \approx 2^{-147.8}$ and $q_s Q_H / (\alpha p_{\mathrm{cap}} 2^{256}) \approx Q_H / 2^{194.8}$, while the $256$-bit quadratic terms sum to $\le 2 Q_H^2 / 2^{256}$ for $Q_H \gg q_s$. With $P_{\mathrm{UB}}(48, 2^{48}) \le 2^{-131.7076}$, the linear query term is $\approx 2.0765\, Q_H / 2^{128}$. Ignoring PRF terms, the upper bound \eqref{eq:euf-cma-rom} reaches advantage $1/2$ at $Q_H \approx 2^{125.6}$ whole-input random-oracle queries---a necessary-work lower bound implied by our proof, distinct from both concrete attack cost (measured in \BLAKE{} compressions) and the $131.7$-bit \UPORS{} component bound.
+\end{remark}
+
+\section{Deterministic Lean~4.36.0 Formalization}
+\label{sec:lean}
+
+The directory \texttt{formal/Blincs/} contains six zero-dependency Lean~4.36.0 modules (\texttt{Params}, \texttt{Tweaks}, \texttt{Wots}, \texttt{Merkle}, \texttt{Scheme}, \texttt{Reduction}) built via \texttt{lake build} and verified in CI across \textbf{$37$ selected \texttt{\#print axioms} checks} enforced against a \emph{strict allowlist} permitting only standard Lean core axioms (\texttt{propext}, \texttt{Classical.choice}, \texttt{Quot.sound}):
+{\sloppy
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt]
+  \item \textbf{Tweaks \& exact combinatorics (\texttt{Tweaks.lean}, \texttt{Wots.lean}):} \texttt{encodeTweak\_\allowbreak injective}, \texttt{tweak\_\allowbreak fields\_\allowbreak no\_\allowbreak wrap} (zero modular wrap on every runtime coordinate), \texttt{frameContext\_\allowbreak prefix\_\allowbreak free}, \texttt{sliceCount\_\allowbreak eq\_\allowbreak spernerIE}, \texttt{wots\_\allowbreak sperner\_\allowbreak cardinality} ($N(60, 21, 679)$), \texttt{wots\_\allowbreak sperner\_\allowbreak gt\_\allowbreak pow116}, \texttt{wots\_\allowbreak s680\_\allowbreak lt\_\allowbreak pow116}, \texttt{wots\_\allowbreak w59\_\allowbreak lt\_\allowbreak pow116}, \texttt{upors\_\allowbreak slice\_\allowbreak count} ($376$), and \texttt{uporsCode\_\allowbreak antichain}.
+  \item \textbf{Full \WOTSC{} bijection (\texttt{Scheme.lean}):} \texttt{validWotsHash\_\allowbreak eq\_\allowbreak of\_\allowbreak digits\_\allowbreak eq}, \texttt{wotsC\_\allowbreak dominance}, \texttt{encodeWotsCDigits\_\allowbreak valid}, \texttt{wotsCDigit\_\allowbreak encodeWotsCDigits}, and \texttt{encodeWotsCDigits\_\allowbreak wotsCDigit}.
+  \item \textbf{Octopus sibling conservation (\texttt{Merkle.lean}):} \texttt{octopusExtractAux\_\allowbreak len\_\allowbreak eq\_\allowbreak exactSibs} and \texttt{octopusClimbAux\_\allowbreak sibs\_\allowbreak consumed}, proving that any successful Octopus climb over $45$ slots enforces the exact combinatorial cap $\texttt{exactOctopusSibs}\ 11\ \mathsf{leaves} \le 45$ matching the sibling count modeled in \texttt{tools/upors\_\allowbreak cert.rs}.
+  \item \textbf{Codec, normative signer, and $13$-witness dichotomy (\texttt{Scheme.lean}, \texttt{Reduction.lean}):} \texttt{encodeImprint\_\allowbreak length} ($3{,}990$~B), \texttt{encodeImprint\_\allowbreak injective}, \texttt{decodeImprint\_\allowbreak encodeImprint}, \texttt{decodeImprint\_\allowbreak bad\_\allowbreak len}, \texttt{extractUporsLeaves\_\allowbreak spec}, \texttt{blincs\_\allowbreak completeness}, \texttt{checkValidWotsHash\_\allowbreak iff}, \texttt{checkValidUporsSel\_\allowbreak iff}, \texttt{signNormative\_\allowbreak sound} (exporting verification soundness, propositional $\mathrm{ctr}_{\mathrm{ft}}$ minimality, and propositional \WOTSC{} counter minimality for \emph{all six} hypertree layers), \texttt{rng\_\allowbreak failure\_\allowbreak hedged\_\allowbreak fallback}, and \texttt{blincs\_\allowbreak forgery\_\allowbreak dichotomy} (with \texttt{uporsCover} and \texttt{queryCoversUporsChain} carrying \texttt{exactOctopusSibs} $\le 45$ and chained \texttt{FEW\_CODE}($D_{\mathrm{sel}}$)).
+\end{enumerate}
+}
+
+\paragraph{Explicit unmechanized boundary.}
+The Lean development formalizes deterministic combinatorics, wire codecs, normative bounded signing, verification, and existential witness classification over arbitrary deterministic \texttt{HashOracle}s. The probabilistic ROM+PRF games and explicit query-trace membership $\mathcal{T}$ (\cref{sec:security}), the $256$-bit integer envelope and exact-\texttt{BigInt} all-orbits certification (\texttt{tools/upors\_cert.rs}, run in \texttt{--fast} mode in CI), the $2^{64}-1$ message-length guard, constant-time padding checks, and code equivalence to the optimized SIMD Rust/assembly implementations remain outside Lean.
+
+\section{Cross-Architecture Hardware--Software Co-Design}
+\label{sec:codesign}
+
+\subsection{Packed \WOTSC{} vs.\ Zero-Table Sperner DP on ARM Cortex-M33}
+{\sloppy
+We evaluated embedded behavior using a bare-metal \texttt{thumbv8m.main-\allowbreak none-\allowbreak eabihf} harness under QEMU~11.1.3 (\texttt{-machine mps2-an505 -cpu cortex-m33}) with a custom TCG Thumb-2 instruction-class counter and byte-exact \texttt{0xA5A5A5A5} SRAM sentinel watermark probing (measuring overwritten stack memory). \emph{We explicitly distinguish exact QEMU-executed Thumb-2 instruction counts and sentinel watermarks from Arm Cortex-M33 TRM~\cite{arm2020m33trm} $0$-wait-state cycle/time estimates at $160\text{ MHz}$; physical Cortex-M33 silicon has not been measured.}
+
+A zero-table constant-sum Sperner DP unranker~\cite{zhang2023csum,khovratovich2025hypercube} at $S = 679$ ($21 \times 680$ boxcar deconvolution in $u128$) executes $6{,}497{,}391$ Thumb-2 instructions across $6$ layers ($\approx 8.86\text{M}$ TRM cycles $\approx 55.4\text{ ms}$ at $160\text{ MHz}$) and touches $21{,}924\text{ B}$ of stack ($22{,}756\text{ B} = 22.22\text{ KiB}$ total verify stack; by contrast, a table-based desktop Sperner baseline requires $115\text{ KiB}$ of static ROM tables). \BLINCS{}'s packed \WOTSC{} (\cref{sec:wotsc}) executes \textbf{$3{,}577$ Thumb-2 instructions} across all $6$ layers (\textbf{$1{,}816\times$ fewer}), cuts full pure-Rust $1$-block verification (using a specialized constant-permutation single-block pure-Rust \texttt{CHAIN} kernel, $\approx 770$ instructions/compression) from $9.36\text{M}$ to \textbf{$3.12\text{M}$ Thumb-2 instructions} ($3.00\times$ fewer instructions; $\approx 23.2\text{ ms}$ vs.\ $\approx 76.4\text{ ms}$ TRM-modeled at $160\text{ MHz}$, $3.30\times$), and lowers the verification stack watermark from $22{,}756\text{ B}$ to \textbf{$988\text{ B}$} ($95.7\%$ reduction, $< 1\text{ KiB}$; sentinel watermarks measure observed overwritten bytes on the tested input rather than an analytical worst-case stack/interrupt bound). Streaming \texttt{TreeHash} watermarks measure $996\text{ B}$ for a height-$7$ lower tree and $636\text{ B}$ for the height-$11$ \UPORS{} tree.
+}
+
+\subsection{Thumb-2+FPU \BLAKE{} Assembly and $32$-Byte \texttt{CHAIN} Layout}
+Because $97.0\%$ of ideal fixed warm-signing compressions with the $16\text{ KiB}$ partial cut ($944{,}184 / 973{,}574$) and $95.8\%$ of short-message verification compressions ($3{,}603 / 3{,}761$) are standard $32$-byte \texttt{CHAIN} calls, we implemented an ARMv8-M Thumb-2+FPU \texttt{CHAIN} kernel using deferred barrel-shifter rotation fusion (\texttt{add.w}/\texttt{eor.w} with inline \texttt{ror \#7/\#8/\#12/\#16}, removing all $224$ explicit rotate instructions/compression) and holding compression state in FPU registers (\texttt{s0..s31}, $0.2\%$ memory instructions). Differentially checked against \texttt{blake3::keyed\_hash} across a $59$-step test chain, this kernel executes \textbf{$653.2$ Thumb-2 instructions/compression} ($1.83\times$ fewer instructions than stock general-purpose Rust \texttt{blake3::keyed\_hash}'s $1{,}193.4$ instructions; TRM-modeled $\approx 655$ vs.\ $\approx 1{,}459$ $0$-wait cycles, $2.23\times$). On the TRM $160\text{ MHz}$ model with the $16\text{ KiB}$ partial cut ($973{,}574$ ideal harvested fixed + $34{,}019$ mean / $75{,}533$ $p99$ grind), warm signing models at $\approx 4.44\text{ s}$ mean / $\approx 4.82\text{ s}$ $p99$ (with ASM on \texttt{CHAIN} only and stock \texttt{blake3} elsewhere; $\approx 4.39\text{ s}$ $p99$ with ASM throughout; $\approx 9.57\text{ s}$ $p99$ in stock \texttt{blake3}) and short-message verification models at $\approx 16.2\text{ ms}$.
+
+We also tested an alternative $52$-byte Round-$0$-skip \texttt{CHAIN} layout (\texttt{m[8..11]=val, m[12]=step}): while it reduced modeled Cortex-M33 cycles by $6.1\%$ ($\approx 655 \to 615$), it exited \texttt{blake3-servil-core}'s $32$-byte packed SIMD path and regressed Apple~M6 signing by $+37\%$ and verification by $+50\%$, motivating our choice to keep the standard $32$-byte \texttt{CHAIN} layout.
+
+\subsection{Desktop Single-Threaded SIMD and Proved Zero-False-Negative Optimizations}
+In \texttt{signet} (strictly single-threaded \texttt{blake3-servil-core = "=0.11.0"}):
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt]
+  \item \textbf{$19{,}584$-chain batch wave:} Signing batches all $5 \cdot 128 \cdot 21 = 13{,}440$ lower-hypertree chains ($59$ steps) together with all $2{,}048 \cdot 3 = 6{,}144$ \UPORS{} chains ($23$ steps, retired early after step $23$) into $612$ groups of $32$ chains with zero partial batches (regenerating active lower-layer chain values in a second tiny pass only for the single winning leaf per layer, avoiding retaining $19{,}584 \times 60$ intermediate states).
+  \item \textbf{Exact SWAR \WOTSC{} bounds test (\texttt{src/coding.rs}):} Writing $w_0 = \mathrm{LE64}(H_\ell[0..8])$ and $w_1 = \mathrm{LE64}(H_\ell[8..16])$ with $(w_0 \bmod 4) = 0$, the first $10$ packed $6$-bit digits reside in $a = w_0 \gg 2$, digit $10$ is $d_{10} = (w_0 \gg 62) + ((w_1 \mathbin{\&} \mathtt{0xf}) \ll 2)$, and the remaining $10$ digits reside in $b = w_1 \gg 4$. Because a $6$-bit integer $d \in [0, 64)$ satisfies $d \ge 60$ ($\mathtt{111100}_2..\mathtt{111111}_2$) \emph{if and only if} bits $2,3,4,5$ are all $1$, setting $M = \mathtt{0x0104\_1041\_0410\_4104}$ (bit $2$ of lanes $0..9$) gives the exact branchless predicate:
+    \begin{align*}
+      \big(a \mathbin{\&} (a \gg 1) \mathbin{\&} (a \gg 2) \mathbin{\&} (a \gg 3) \mathbin{\&} M\big) &= 0, \qquad d_{10} < 60, \\
+      \big(b \mathbin{\&} (b \gg 1) \mathbin{\&} (b \gg 2) \mathbin{\&} (b \gg 3) \mathbin{\&} M\big) &= 0.
+    \end{align*}
+  \item \textbf{Proved zero-false-negative pure-$u64$ bit-fold \UPORS{} prefilter (\texttt{src/few\_time.rs}):} Let $S_0$ be the set of distinct leaves appearing in the first $9$ $11$-bit chunks of $H_{\mathrm{sel}}$. Whenever $H_{\mathrm{sel}}$ yields $9$ distinct leaves $S$ within $18$ chunks, we necessarily have $S_0 \subseteq S$. Because subtree occupancy $n_j(\cdot)$ is monotone under inclusion ($n_j(S) \ge n_j(S_0)$ for all $j \in \{1,\dots,10\}$) and non-increasing in height ($n_j(S) \ge n_5(S) \ge n_5(S_0)$ for all $j \in \{1,\dots,5\}$),
+    \[
+      \mathrm{sibs}(S) + 7 \;=\; \sum_{j=1}^{10} n_j(S) \;\ge\; 5\, n_5(S_0) + \sum_{j=6}^{10} n_j(S_0) \;=:\; \mathrm{lb}(S_0).
+    \]
+    Setting bit $\lfloor x / 32 \rfloor \in [0, 64)$ of a single $64$-bit mask $m_5$ for each of the first $9$ draws computes $n_5(S_0) = \mathrm{popcnt}(m_5)$ and $n_6(S_0),\dots,n_{10}(S_0)$ via $5$ masked bit-folds. Rejecting whenever $\mathrm{lb}(S_0) > 52$ is \emph{provably exact} (zero false negatives on all $2^{256}$ digests, preserving the exact minimum $\mathrm{ctr}_{\mathrm{ft}}$), filters $99.30\%$ of non-qualifying digests without sorting, and cuts desktop \UPORS{} grinding $20.1\times$ ($3.27\text{ ms} \to 163\;\mu\text{s}$).
+\end{enumerate}
+
+\section{Live Benchmarks, $q_s = 2^{64}$ Byte Projections, and Quantum Analysis}
+\label{sec:comparison}
+
+\subsection{Live Single-Core Apple~M6 Benchmarks and $q_s = 2^{64}$ Projections}
+\Cref{tab:compare} compares \BLINCS{} against OpenSSL~4.1.0 (ARMv8 SHA2/SHA3 hardware extensions) and PQC Suite~B (\texttt{b392fe82}, \texttt{RAYON\_NUM\_THREADS=1}) on the same Apple~M6 host (macOS arm64, Rust~1.100.0). Measured via \texttt{bench-hashes}/\texttt{clocks} ($0$--$1\%$ E-cores, $64$~B message, $31$~B context, warm $256\text{ KiB}$ top cache, including full verification self-check inside \texttt{imprint}):
+\texttt{Signet::from\_seed} builds the $256\text{ KiB}$ top heap in \textbf{$82.74\text{ ms}$} ($368.4\text{M}$ cycles, $1.25$ IPC);
+warm \texttt{Signet::imprint} takes \textbf{$8.45\text{ ms}$} ($36.9\text{M}$ cycles, $1.36$ IPC, $118/\text{s}$);
+zero-allocation \texttt{SignetId::verify} takes \textbf{$62.7\;\mu\text{s}$} ($288.1\text{k}$ cycles, $7.44$ IPC, $15{,}950/\text{s}$);
+single-pass $100\text{ MiB}$ slice signing/verifying runs at $4{,}479 / 6{,}951\text{ MB/s}$ ($2{,}992 / 3{,}925\text{ MB/s}$ streaming).
+Our standalone \texttt{\#![no\_std]} verifier \texttt{crates/signet-verify} compiles to a freestanding \textbf{$27.1\text{ KiB}$}, zero-import \texttt{wasm32-unknown-unknown} module verified under Node~24, and our release mutation suite tests $1{,}109$ mutants with $0$ timeouts and $0$ unexpected survivors.
+
+\paragraph{Byte-count projections at $q_s = 2^{64}$.}
+To separate the byte savings of \WOTSC{}+\UPORS{} from the $q_s = 2^{48}$ vs.\ $2^{64}$ budget against \textsf{SLH-DSA-128s} ($7{,}856$~B), \cref{tab:compare} includes two \emph{wire-byte-only projections} at $h = 64$ ($q_s = 2^{64}$, where \cref{tab:itsr} confirms $\ge 131.7076\text{ b}$ under exact $\mathrm{Bin}(2^{64}, 2^{-64})$): \BLINCSsixfour{} ($d = 8$, $10{+}5{\times}8{+}2{\times}7 = 64$, $4{,}924$~B, $-37.3\%$) and \BLINCSsixfours{} ($d = 7$, $10{+}6{\times}9 = 64$, $4{,}585$~B, $-41.6\%$). Because naively widening the $16$-byte tweak to $18$--$20$~bytes to hold a $64$-bit tree index pushes \UPORS{} \texttt{ONE\_TIME\_KEY} ($66$--$68$~B) and $31$~B-context \texttt{MESSAGE} ($130$--$132$~B) across $64$-byte block boundaries and leaves the $32$-byte \texttt{CHAIN} fast path, we do not extrapolate timings for $h = 64$ absent a concrete repacked suite.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{1.8pt}
+\caption{Single-core Apple~M6 comparison (macOS arm64). OpenSSL~4.1.0 rows use ARMv8 SHA2/SHA3 extensions (uncached); \textsf{SLH-DSA-BLAKE3} rows reproduce PQC Suite~B (\texttt{b392fe82}, $1$ thread, uncached); \BLINCS{} is measured in \texttt{signet} (\texttt{blake3-servil-core 0.11.0}, \texttt{clocks}, $256\text{ KiB}$ top cache, self-check enabled); $h = 64$ rows are wire-byte projections only.}
+\label{tab:compare}
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+Scheme & $q_s$ & Cache & VK (B) & Sig (B) & vs.\ 128s & Sign 64~B (1c) & Verify 64~B \\
+\midrule
+\textsf{ML-DSA-44} (FIPS 204, lattice)~\cite{nist2024fips204} & --- & $0$ & $1{,}312$ & $2{,}420$ & $-69.2\%$ & $0.15\text{ ms}$ & $31.0\;\mu\text{s}$ \\
+\textsf{SLH-DSA-SHA2-128s} (OpenSSL 4.1) & $2^{64}$ & $0$ & $32$ & $7{,}856$ & $0\%$ & $52.4\text{ ms}$ & $50.0\;\mu\text{s}$ \\
+\textsf{SLH-DSA-SHAKE-128s} (OpenSSL 4.1) & $2^{64}$ & $0$ & $32$ & $7{,}856$ & $0\%$ & $274.5\text{ ms}$ & $278.0\;\mu\text{s}$ \\
+\textsf{SLH-DSA-BLAKE3-128s} (PQC Suite B) & $2^{64}$ & $0$ & $32$ & $7{,}856$ & $0\%$ & $121.7\text{ ms}$ & $126.6\;\mu\text{s}$ \\
+\textsf{SLH-DSA-BLAKE3-128f} (PQC Suite B) & $2^{64}$ & $0$ & $32$ & $17{,}088$ & $+117.5\%$ & $5.81\text{ ms}$ & $353.7\;\mu\text{s}$ \\
+\midrule
+\BLINCSsixfour{} ($10{+}5{\times}8{+}2{\times}7$, byte proj.) & $2^{64}$ & --- & $32$ & $4{,}924$ & $-37.3\%$ & --- & --- \\
+\BLINCSsixfours{} ($10{+}6{\times}9$, byte proj.) & $2^{64}$ & --- & $32$ & $4{,}585$ & $-41.6\%$ & --- & --- \\
+\textbf{\BLINCS{} ($13{+}7{\times}5$, flagship)} & $\mathbf{2^{48}}$ & $\mathbf{256\text{ KiB}}^{\dagger}$ & $\mathbf{32}$ & $\mathbf{3{,}990}$ & $\mathbf{-49.2\%}$ & $\mathbf{8.45\text{ ms}}$ & $\mathbf{62.7\;\mu\text{s}}$ \\
+\bottomrule
+\end{tabular}
+\par\vspace{3pt}\noindent
+{\scriptsize $^{\dagger}$Wire signatures are byte-for-byte identical with a $16\text{ KiB}$ partial cut ($+1.08\%$ ideal fixed compressions), $32\text{ KiB}$ upper heap ($+0.98\%$), or $0\text{ B}$ cache.}
+\end{table}
+
+\subsection{Quantum Security, Multi-User Scope, and Open Problems}
 \label{sec:quantum}
-\paragraph{Abstract QROM query scales vs.\ realistic physical CRQC costs.}
-Our headline $128$-bit target is \emph{classical single-user} security. In abstract quantum random-oracle (QROM) query units, a single $128$-bit preimage target has Grover query scale $O(2^{64})$, arbitrary collisions in a $128$-bit output have BHT query scale $O(2^{128/3})$ (note that arbitrary collisions are not automatically target-bound second preimages or signature forgeries), and known-salt collisions in the $256$-bit content hash have BHT query scale $O(2^{256/3})$. However, as Daniel~J.~Bernstein proved in his landmark SHARCS~2009 cost analysis of quantum hash collisions~\cite{bernstein2009sharcs}, counting abstract oracle queries ignores the physical area--time and quantum-RAM communication costs of a cryptographically relevant quantum computer (CRQC) laid out in two- or three-dimensional space: BHT's $O(2^{n/3})$ query algorithm requires $O(2^{n/3})$ coherent memory whose physical routing latency leaves total hardware$\times$time collision cost no better than classical parallel Pollard-$\rho$ search on a realistic 2D mesh, and under fixed-time parallelization across $M$ processors, Grover's $O(\sqrt{N/M})$ depth likewise fails to reduce total hardware$\times$time preimage cost below classical brute force ($M \cdot \sqrt{N/M} = \sqrt{MN}$ grows with $M$, reaching $N$ at $M = N$, and requires massive serial depth for small $M$). Accordingly, while \BLINCS{} is designed with $128$-bit classical target security and relies on no Shor-vulnerable algebraic structure, formal QROM security proofs for adaptive \SWOTS{}/\UPORS{} grinding (cf.~\cite{don2022qrom}) remain open.
+Our headline $128$-bit target is \emph{classical single-user} security. In abstract quantum random-oracle (QROM) query units, a single $128$-bit preimage target has query scale $O(2^{64})$, arbitrary collisions in a $128$-bit output have BHT query scale $O(2^{128/3})$ (noting that arbitrary collisions do not automatically yield root-anchored second preimages or signature forgeries), and collisions in the public $256$-bit content hash have BHT query scale $O(2^{256/3})$. As Daniel~J.~Bernstein proved in his SHARCS~2009 physical cost analysis of hash collisions~\cite{bernstein2009sharcs}, however, counting abstract oracle queries omits the 2D/3D hardware area--time and quantum-RAM routing costs of a cryptographically relevant quantum computer (CRQC): on a physical 2D mesh, BHT's $O(2^{n/3})$ coherent-memory routing latency leaves total hardware$\times$time collision cost no better than classical parallel Pollard-$\rho$ search. For preimage search across $M$ parallel processors, amplitude amplification reduces serial depth to $O(\sqrt{N/M})$ with hardware$\times$time product scaling as $\sqrt{MN}$ (requiring large serial depth for small $M$, approaching $N$ as $M \to N$, and incurring fault-tolerant gate overhead). While \BLINCS{} relies on no Shor-vulnerable algebraic structure, formal QROM security proofs for adaptive \WOTSC{}/\UPORS{} grinding (cf.~\cite{don2022qrom}) remain open.
 
-\paragraph{Multi-user security and other open problems.}
-Multi-user security across $U$ independent keys is not proved in \cref{thm:euf-cma-rom}: because $\mathsf{pk\_seed}$ is $128$~bits, two independent users collide on $\mathsf{pk\_seed}$ (and hence share $K_{\mathrm{pub}}$ across overlapping address domains, since $\mathsf{root}$ is bound into \texttt{MESSAGE} and \texttt{CONTENT} but not into \texttt{CHAIN}/\texttt{NODE}/\texttt{ONE\_TIME\_MSG}) with birthday probability $U(U-1)/2^{129}$. Tight multi-user proofs, QROM lifting, direct comparison against matched-budget \textsf{PORS+FP}~\cite{abri2025porsfp} and \textsf{WOTS+C}~\cite{kudinov2022wotsplusc} implementations, and hardware measurements on physical Cortex-M33 silicon remain open work.
+\paragraph{Multi-user security and open work.}
+\Cref{thm:euf-cma-rom} covers single-user security only. Across $U$ independent users, the $128$-bit $\mathsf{pk\_seed}$ admits key-sharing coincidences with small-probability union bound $U(U-1)/2^{129}$ (in addition to generic multi-user advantage amplification across distinct keys). Tight multi-user proofs, QROM lifting, direct matched-parameter implementations comparing \BLINCS{} against \textsf{PORS+FP}~\cite{abri2025porsfp}, \textsf{BPORS+FP}~\cite{ren2026bporsfp}, and \textsf{BPORSC}~\cite{wang2026bporsc}, and physical Cortex-M33 silicon measurements with DPA/FI hardening remain open work.
 
 \section*{Acknowledgments}
-We thank Conor Deegan, Alessandro Baiocchi, Matteo Vena, Matteo Vicari, and the Project~11 research team for early specification feedback and constrained-device parameter-search inspiration, Servil Software Factory for \texttt{blake3-servil-core} and \texttt{bench-hashes}/\texttt{clocks}, and the automated adversarial cryptographer review that identified the capped-history positive-clustering phenomenon, the Lean~4 specification divergences, and the compression-count and $2$-block \texttt{FEW\_CODE} corrections integrated into this draft.
+We thank Conor Deegan, Alessandro Baiocchi, Matteo Vena, Matteo Vicari, and the Project~11 research team for early specification feedback and constrained-device parameter-search inspiration, and Servil Software Factory for \texttt{blake3-servil-core} and \texttt{bench-hashes}/\texttt{clocks}.
 
 \bibliographystyle{abbrv}
 \bibliography{blincs}

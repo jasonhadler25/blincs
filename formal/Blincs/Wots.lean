@@ -1,17 +1,17 @@
 /-
-  BLINCS-128-A2 Declarative Specification: Constant-Sum Antichains, S-WOTS+Z & U-PORS Coding.
+  BLINCS-48-X Declarative Specification: Constant-Sum Antichains, WOTS+C & U-PORS Coding.
   Mechanically proves (ZERO `sorry`, ZERO custom axioms):
     1. **General Constant-Sum Antichain Theorem** (`constantSum_antichain`): any two distinct
        vectors with equal coordinate sum satisfy `∃ c, f c < g c`.
     2. **Unified Chain Completeness & Forgery Extraction** (`chain_complete`, `chain_forgery_extract`)
-       shared by `S-WOTS+Z` (`maxSteps = 39`) and `U-PORS` (`maxSteps = 23`).
-    3. **U-PORS Zero-ROM Hexagon Unranker (`L_42(3, 24)`, `C = 376`)**:
+       shared by `WOTS+C` (`maxSteps = 59`) and `U-PORS` (`maxSteps = 23`).
+    3. **U-PORS Zero-Table Hexagon Slice (`L_42(3, 24)`, `C = 376`)**:
        exact bounds (`≤ 23`), exact constant sum (`= 42`), injectivity, and strict antichain
        dominance (`uporsCode_antichain`).
-    4. **S-WOTS+Z Sperner Unranker (`L_468(24, 40)`, `> 2^120`)**:
-       exact kernel-verified cardinality `1,973,221,677,906,098,493,567,206,234,001,571,000 > 2^120`,
-       exact bounds (`≤ 39`), exact constant sum (`= 468`), injectivity, and strict antichain
-       dominance (`wots_dominance`).
+    4. **WOTS+C Constant-Sum Slice Cardinality (`L_679(21, 60)`, `> 2^116`)**:
+       exact kernel-verified cardinality `83,261,328,062,314,682,436,358,950,675,433,803 > 2^116`
+       via direct Hockey-Stick/Pascal proof (`sliceCount_eq_spernerIE`), plus minimality checks
+       (`wots_s680_lt_pow116`, `wots_w59_lt_pow116`).
 -/
 import Blincs.Params
 
@@ -156,7 +156,7 @@ theorem chainIter_collision {H : Type} (step : Nat → H → H) (start k : Nat) 
       rw [hnode] at hab hcol
       exact ⟨s, a, by omega, by omega, hab, hcol⟩
 
-/-- **Unified Chain Forgery Extraction Lemma (shared by `S-WOTS+Z` and `U-PORS`).**
+/-- **Unified Chain Forgery Extraction Lemma (shared by `WOTS+C` and `U-PORS`).**
     Either `y` equals the exact honest node at depth `d₁`, or there is an explicit step `s ∈ [d₁, maxSteps)`
     and `a ≠ chainIter step 0 s x₀` colliding with the exact honest chain node at step `s`. -/
 theorem chain_forgery_extract {H : Type} (step : Nat → H → H) (x₀ y : H) {d₁ maxSteps : Nat} (hd₁ : d₁ ≤ maxSteps)
@@ -182,7 +182,7 @@ theorem chain_forgery_extract {H : Type} (step : Nat → H → H) (x₀ y : H) {
 
 -- ---------------------------------------------------------------------------
 -- 3. General Constant-Sum Slice Enumeration & Bijective Unranking
---    (Instantiated for BOTH U-PORS `L_42(3, 24)` AND S-WOTS+Z `L_468(24, 40)`!)
+--    (Instantiated for U-PORS `L_42(3, 24)` AND `WOTS+C` slice cardinality `L_679(21, 60)`.)
 -- ---------------------------------------------------------------------------
 
 /-- Pure recursive specification of slice cardinality `N(w, k, s)`. -/
@@ -651,34 +651,47 @@ theorem sliceCount_eq_spernerIE (w : Nat) (hw : 0 < w) :
     rw [hLHS1, hLHS2, hRHS, hRHS2, ← h0eq, ← hmid, ← hlastEq]
     omega
 
-/-- **Exact `S-WOTS+Z` Slice Cardinality Theorem (directly on `sliceCount`, ZERO gap!):**
-    `sliceCount 40 24 468 = 1,973,221,677,906,098,493,567,206,234,001,571,000`. -/
+/-- **Exact `WOTS+C` Slice Cardinality Theorem (directly on `sliceCount`, ZERO gap!):**
+    `sliceCount 60 21 679 = 83,261,328,062,314,682,436,358,950,675,433,803`. -/
 theorem wots_sperner_cardinality :
-    sliceCount WOTS_W WOTS_N WOTS_SUM = 1973221677906098493567206234001571000 := by
+    sliceCount WOTS_W WOTS_N WOTS_SUM = 83261328062314682436358950675433803 := by
   have h1 : (sliceCount WOTS_W WOTS_N WOTS_SUM : Int) = spernerIEInt WOTS_W WOTS_N WOTS_SUM :=
-    sliceCount_eq_spernerIE WOTS_W (by decide) 23 WOTS_SUM
+    sliceCount_eq_spernerIE WOTS_W (by decide) 20 WOTS_SUM
   rw [← spernerIEFast_eq_spernerIEInt] at h1
-  have h2 : spernerIEFast WOTS_W WOTS_N WOTS_SUM = (1973221677906098493567206234001571000 : Int) := by
+  have h2 : spernerIEFast WOTS_W WOTS_N WOTS_SUM = (83261328062314682436358950675433803 : Int) := by
     decide
   rw [h2] at h1
   exact Int.ofNat.inj h1
 
-/-- Exact `S-WOTS+Z` capacity strictly exceeds `2^120` (directly on `sliceCount 40 24 468`!). -/
-theorem wots_sperner_gt_pow120 :
-    2 ^ 120 < sliceCount WOTS_W WOTS_N WOTS_SUM := by
+/-- Exact `WOTS+C` slice cardinality strictly exceeds `2^116` (directly on `sliceCount 60 21 679`!). -/
+theorem wots_sperner_gt_pow116 :
+    2 ^ 116 < sliceCount WOTS_W WOTS_N WOTS_SUM := by
   rw [wots_sperner_cardinality]
   decide
 
-/-- Sanity cross-check directly on `sliceCount 39 24 456`: `w = 39` falls strictly below `2^120`, proving `w = 40` is minimal! -/
-theorem wots_w39_lt_pow120 :
-    sliceCount 39 24 456 < 2 ^ 120 := by
-  have h1 : (sliceCount 39 24 456 : Int) = spernerIEInt 39 24 456 :=
-    sliceCount_eq_spernerIE 39 (by decide) 23 456
+/-- Maximality check directly on `sliceCount 60 21 680`: `S = 680` falls below `2^116`, proving `S = 679` maximizes verify savings! -/
+theorem wots_s680_lt_pow116 :
+    sliceCount 60 21 680 < 2 ^ 116 := by
+  have h1 : (sliceCount 60 21 680 : Int) = spernerIEInt 60 21 680 :=
+    sliceCount_eq_spernerIE 60 (by decide) 20 680
   rw [← spernerIEFast_eq_spernerIEInt] at h1
-  have h2 : spernerIEFast 39 24 456 = (1102272360296506971467046668212509411 : Int) := by
+  have h2 : spernerIEFast 60 21 680 = (82490137385725853714173226230584645 : Int) := by
     decide
   rw [h2] at h1
-  have hnat : sliceCount 39 24 456 = 1102272360296506971467046668212509411 := Int.ofNat.inj h1
+  have hnat : sliceCount 60 21 680 = 82490137385725853714173226230584645 := Int.ofNat.inj h1
+  rw [hnat]
+  decide
+
+/-- Sanity cross-check directly on `sliceCount 59 21 609`: `w = 59` falls strictly below `2^116`, proving `w = 60` is minimal! -/
+theorem wots_w59_lt_pow116 :
+    sliceCount 59 21 609 < 2 ^ 116 := by
+  have h1 : (sliceCount 59 21 609 : Int) = spernerIEInt 59 21 609 :=
+    sliceCount_eq_spernerIE 59 (by decide) 20 609
+  rw [← spernerIEFast_eq_spernerIEInt] at h1
+  have h2 : spernerIEFast 59 21 609 = (78228963735388386547011922577368349 : Int) := by
+    decide
+  rw [h2] at h1
+  have hnat : sliceCount 59 21 609 = 78228963735388386547011922577368349 := Int.ofNat.inj h1
   rw [hnat]
   decide
 
@@ -883,7 +896,7 @@ theorem unrankVec_injective (w k s r₁ r₂ : Nat)
     have := congrFun heq ⟨i, hi⟩
     simpa [unrankVec] using this
 
-/-- **Master Constant-Sum Unranker Strict Antichain Theorem** (instantiated for BOTH `S-WOTS+Z` and `U-PORS`!). -/
+/-- **Master Constant-Sum Unranker Strict Antichain Theorem** (instantiated for `U-PORS` and constant-sum slices). -/
 theorem unrankVec_antichain (w k s r₁ r₂ : Nat)
     (hr₁ : r₁ < sliceCount w k s) (hr₂ : r₂ < sliceCount w k s)
     (hne : r₁ ≠ r₂) :
@@ -895,7 +908,7 @@ theorem unrankVec_antichain (w k s r₁ r₂ : Nat)
   exact constantSum_antichain hsum hvec_ne
 
 -- ---------------------------------------------------------------------------
--- 4. Concrete BLINCS-128-A2 Instantiations: `U-PORS` (`L_42(3, 24)`) & `S-WOTS+Z` (`L_468(24, 40)`)
+-- 4. Concrete BLINCS-48-X Instantiations: `U-PORS` (`L_42(3, 24)`) & `WOTS+C` (`L_679(21, 60)`)
 -- ---------------------------------------------------------------------------
 
 /-- Exact `U-PORS` slice cardinality `|L_42(3, 24)| = 376` (`SPEC.md §10.1`). -/
@@ -925,12 +938,12 @@ theorem uporsCode_antichain {i j : Fin UPORS_C} (hne : i ≠ j) :
     (by rw [upors_slice_count]; exact j.isLt)
     (fun h => hne (Fin.ext h))
 
-/-- `S-WOTS+Z` codeword digit `c : Fin 24` for a 120-bit rank (`SPEC.md §11.1`). -/
+/-- Auxiliary constant-sum unranked digit `c : Fin 21` for `L_679(21, 60)` (note `BLINCS-48-X` itself uses direct packed `wotsCDigit` in `Scheme.lean`). -/
 def wotsDigit (rank : Nat) (c : Fin WOTS_N) : Nat :=
   unrankVec WOTS_W WOTS_N WOTS_SUM rank c
 
-/-- **S-WOTS+Z Dominance Theorem:** any two distinct valid ranks `r₁ ≠ r₂ < sliceCount 40 24 468`
-    have an explicit chain `c : Fin 24` with `wotsDigit r₁ c < wotsDigit r₂ c`. -/
+/-- **Constant-Sum Unranker Dominance Theorem:** any two distinct valid ranks `r₁ ≠ r₂ < sliceCount 60 21 679`
+    have an explicit chain `c : Fin 21` with `wotsDigit r₁ c < wotsDigit r₂ c`. -/
 theorem wots_dominance {r₁ r₂ : Nat}
     (hr₁ : r₁ < sliceCount WOTS_W WOTS_N WOTS_SUM)
     (hr₂ : r₂ < sliceCount WOTS_W WOTS_N WOTS_SUM)
@@ -938,7 +951,7 @@ theorem wots_dominance {r₁ r₂ : Nat}
     ∃ c : Fin WOTS_N, wotsDigit r₁ c < wotsDigit r₂ c :=
   unrankVec_antichain WOTS_W WOTS_N WOTS_SUM r₁ r₂ hr₁ hr₂ hne
 
-theorem wotsDigit_le_39 {r : Nat} (hr : r < sliceCount WOTS_W WOTS_N WOTS_SUM) (c : Fin WOTS_N) :
+theorem wotsDigit_le_steps {r : Nat} (hr : r < sliceCount WOTS_W WOTS_N WOTS_SUM) (c : Fin WOTS_N) :
     wotsDigit r c ≤ WOTS_STEPS := by
   unfold wotsDigit
   have hlt := unrankVec_lt WOTS_W WOTS_N WOTS_SUM r hr c

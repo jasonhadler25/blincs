@@ -1,7 +1,7 @@
 /-
-  BLINCS-128-A2 Declarative Specification: Binary Merkle Trees & Bottom-Up Octopus Multi-Proofs.
-  Pure structural recursion on tree height `h` (used for the `12+7+7+7` hypertree layers
-  and the single height-10 `U-PORS` Octopus tree).
+  BLINCS-48-X Declarative Specification: Binary Merkle Trees & Bottom-Up Octopus Multi-Proofs.
+  Pure structural recursion on tree height `h` (used for the `13+7+7+7+7+7` hypertree layers
+  and the single height-11 `U-PORS` Octopus tree).
   Mechanically proves:
     1. Exact authentication path length (`(merklePath ...).length = h`).
     2. Exact Merkle reconstruction completeness (`merkleReconstruct ... (merklePath ...) = merkleNode ...`).
@@ -744,5 +744,169 @@ theorem octopus_forgery_collision {H : Type} (combine : Nat → Nat → H → H 
     [(0, treeNodeAt combine leafFn h 0)] remSibs hclimb
     (by intro pv hpv; simp only [List.mem_singleton] at hpv; subst hpv; simp)
   simpa [treeNodeAt] using hres
+
+-- ---------------------------------------------------------------------------
+-- Pure Combinatorial Octopus Sibling Count & Bridge to `octopusClimb` (`SPEC.md §10.2`)
+-- ---------------------------------------------------------------------------
+
+/-- Pure combinatorial one-level Octopus parent list & sibling count (independent of hashes,
+    matching `SPEC.md §10.2` and `tools/upors_cert.rs`). -/
+def exactOctopusSibsLevel : List Nat → List Nat × Nat
+  | [] => ([], 0)
+  | [x] => ([x / 2], 1)
+  | x :: y :: rest =>
+    if x % 2 = 0 ∧ y = x + 1 then
+      let (ps, cnt) := exactOctopusSibsLevel rest
+      (x / 2 :: ps, cnt)
+    else
+      let (ps, cnt) := exactOctopusSibsLevel (y :: rest)
+      (x / 2 :: ps, cnt + 1)
+
+/-- Pure combinatorial `h`-level Octopus sibling count `sibs(leaves)` (`SPEC.md §10.2`). -/
+def exactOctopusSibs : Nat → List Nat → Nat
+  | 0, _ => 0
+  | rem + 1, cur =>
+    let (ps, cnt) := exactOctopusSibsLevel cur
+    cnt + exactOctopusSibs rem ps
+
+private theorem exactOctopusSibsLevel_eq_extract_len {H : Type} (nodeAt : Nat → H) :
+    ∀ (n : Nat) (cur : List Nat), cur.length ≤ n →
+      (octopusExtractLevel nodeAt cur).1 = (exactOctopusSibsLevel cur).1 ∧
+      (octopusExtractLevel nodeAt cur).2.length = (exactOctopusSibsLevel cur).2 := by
+  intro n
+  induction n with
+  | zero =>
+    intro cur hlen
+    cases cur with
+    | nil => simp [octopusExtractLevel, exactOctopusSibsLevel]
+    | cons _ _ => simp at hlen
+  | succ m ih =>
+    intro cur hlen
+    match cur with
+    | [] => simp [octopusExtractLevel, exactOctopusSibsLevel]
+    | [x] => simp [octopusExtractLevel, exactOctopusSibsLevel]
+    | x :: y :: rest =>
+      simp only [octopusExtractLevel, exactOctopusSibsLevel]
+      by_cases hpair : x % 2 = 0 ∧ y = x + 1
+      · rw [ite_eq_left hpair, ite_eq_left hpair]
+        have hih := ih rest (by simp at hlen; omega)
+        simp [hih.1, hih.2]
+      · rw [ite_eq_right hpair, ite_eq_right hpair]
+        have hih := ih (y :: rest) (by simp at hlen; omega)
+        simp [hih.1, hih.2]
+
+theorem octopusExtractAux_len_eq_exactSibs {H : Type}
+    (combine : Nat → Nat → H → H → H) (leafFn : Nat → H) :
+    ∀ (lvl rem : Nat) (cur : List Nat),
+      (octopusExtractAux combine leafFn lvl rem cur).2.length = exactOctopusSibs rem cur := by
+  intro lvl rem
+  induction rem generalizing lvl with
+  | zero => intro cur; simp [octopusExtractAux, exactOctopusSibs]
+  | succ r ih =>
+    intro cur
+    simp only [octopusExtractAux, exactOctopusSibs]
+    have h1 := exactOctopusSibsLevel_eq_extract_len (treeNodeAt combine leafFn lvl) cur.length cur (Nat.le_refl _)
+    have h2 := ih (lvl + 1) (exactOctopusSibsLevel cur).1
+    simp only [List.length_append, h1.2, h1.1, h2]
+
+private theorem octopusClimbLevel_sibs_consumed_len {H : Type} (combineLvl : Nat → H → H → H) :
+    ∀ (n : Nat) (cur : List (Nat × H)), cur.length ≤ n →
+      ∀ (sibs : List H) (ps : List (Nat × H)) (remSibs : List H),
+        octopusClimbLevel combineLvl cur sibs = some (ps, remSibs) →
+        ps.map Prod.fst = (exactOctopusSibsLevel (cur.map Prod.fst)).1 ∧
+        sibs.length = (exactOctopusSibsLevel (cur.map Prod.fst)).2 + remSibs.length := by
+  intro n
+  induction n with
+  | zero =>
+    intro cur hlen sibs ps remSibs hcl
+    cases cur with
+    | nil =>
+      simp only [octopusClimbLevel, Option.some.injEq, Prod.mk.injEq] at hcl
+      rcases hcl with ⟨rfl, rfl⟩
+      simp [exactOctopusSibsLevel]
+    | cons _ _ => simp at hlen
+  | succ m ih =>
+    intro cur hlen sibs ps remSibs hcl
+    match cur with
+    | [] =>
+      simp only [octopusClimbLevel, Option.some.injEq, Prod.mk.injEq] at hcl
+      rcases hcl with ⟨rfl, rfl⟩
+      simp [exactOctopusSibsLevel]
+    | [(x, vx)] =>
+      cases sibs with
+      | nil => simp [octopusClimbLevel] at hcl
+      | cons s rest =>
+        simp only [octopusClimbLevel, Option.some.injEq, Prod.mk.injEq] at hcl
+        rcases hcl with ⟨rfl, rfl⟩
+        simp [exactOctopusSibsLevel]; omega
+    | (x, vx) :: (y, vy) :: rest =>
+      simp only [octopusClimbLevel] at hcl
+      simp only [List.map_cons, exactOctopusSibsLevel]
+      by_cases hpair : x % 2 = 0 ∧ y = x + 1
+      · rw [ite_eq_left hpair] at hcl
+        rw [ite_eq_left hpair]
+        cases hsub : octopusClimbLevel combineLvl rest sibs with
+        | none => rw [hsub] at hcl; cases hcl
+        | some pair =>
+          rcases pair with ⟨ps', rSibs'⟩
+          rw [hsub] at hcl
+          simp only [Option.some.injEq, Prod.mk.injEq] at hcl
+          rcases hcl with ⟨rfl, rfl⟩
+          have hih := ih rest (by simp at hlen; omega) sibs ps' rSibs' hsub
+          simp [hih.1, hih.2]
+      · rw [ite_eq_right hpair] at hcl
+        rw [ite_eq_right hpair]
+        cases sibs with
+        | nil => cases hcl
+        | cons s restSibs =>
+          dsimp only at hcl
+          cases hsub : octopusClimbLevel combineLvl ((y, vy) :: rest) restSibs with
+          | none => rw [hsub] at hcl; cases hcl
+          | some pair =>
+            rcases pair with ⟨ps', rSibs'⟩
+            rw [hsub] at hcl
+            simp only [Option.some.injEq, Prod.mk.injEq] at hcl
+            rcases hcl with ⟨rfl, rfl⟩
+            have hih := ih ((y, vy) :: rest) (by simp at hlen; omega) restSibs ps' rSibs' hsub
+            simp only [List.map_cons, List.length_cons] at hih ⊢
+            exact ⟨by simp [hih.1], by omega⟩
+
+/-- **Exact Octopus Sibling-Count Conservation Theorem (`SPEC.md §10.2`):**
+    whenever `octopusClimbAux` succeeds on `cur` consuming from `sibs` and leaving `remSibs`,
+    the exact number of siblings consumed equals the pure combinatorial `exactOctopusSibs`. -/
+theorem octopusClimbAux_sibs_consumed {H : Type} (combine : Nat → Nat → H → H → H) :
+    ∀ (lvl rem : Nat) (cur : List (Nat × H)) (sibs : List H)
+      (top : List (Nat × H)) (remSibs : List H),
+      octopusClimbAux combine lvl rem cur sibs = some (top, remSibs) →
+      sibs.length = exactOctopusSibs rem (cur.map Prod.fst) + remSibs.length := by
+  intro lvl rem
+  induction rem generalizing lvl with
+  | zero =>
+    intro cur sibs top remSibs hcl
+    simp only [octopusClimbAux, Option.some.injEq, Prod.mk.injEq] at hcl
+    rcases hcl with ⟨_, rfl⟩
+    simp [exactOctopusSibs]
+  | succ r ih =>
+    intro cur sibs top remSibs hcl
+    simp only [octopusClimbAux] at hcl
+    cases h1 : octopusClimbLevel (combine (lvl + 1)) cur sibs with
+    | none => rw [h1] at hcl; cases hcl
+    | some pair =>
+      rcases pair with ⟨ps, rSibs⟩
+      rw [h1] at hcl
+      have hlev := octopusClimbLevel_sibs_consumed_len (combine (lvl + 1)) cur.length cur (Nat.le_refl _) sibs ps rSibs h1
+      have hrest := ih (lvl + 1) ps rSibs top remSibs hcl
+      simp only [exactOctopusSibs, ← hlev.1]
+      omega
+
+/-- Corollary: any successful Octopus climb over a fixed-width `sibs` array implies
+    `exactOctopusSibs rem (cur.map Prod.fst) ≤ sibs.length`. -/
+theorem octopusClimb_exactSibs_le {H : Type} (combine : Nat → Nat → H → H → H)
+    {lvl rem : Nat} {cur : List (Nat × H)} {sibs : List H}
+    {top : List (Nat × H)} {remSibs : List H}
+    (hcl : octopusClimbAux combine lvl rem cur sibs = some (top, remSibs)) :
+    exactOctopusSibs rem (cur.map Prod.fst) ≤ sibs.length := by
+  have heq := octopusClimbAux_sibs_consumed combine lvl rem cur sibs top remSibs hcl
+  omega
 
 end Blincs

@@ -21,9 +21,9 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
       - run: cargo test --release --locked
-      - name: Compile-check tools/upors_cert.rs
+      - name: Compile and run fast deterministic checks on tools/upors_cert.rs
         working-directory: .
-        run: rustc -O tools/upors_cert.rs -o /tmp/upors_cert_ci && rm -f /tmp/upors_cert_ci
+        run: rustc --edition 2024 -O -D warnings tools/upors_cert.rs -o /tmp/upors_cert_ci && /tmp/upors_cert_ci --fast && rm -f /tmp/upors_cert_ci
 
   lean4-formal:
     name: Lean 4 formalization (zero sorry, zero custom axioms)
@@ -44,12 +44,14 @@ jobs:
           import Blincs
           #print axioms Blincs.key_contexts_distinct
           #print axioms Blincs.encodeTweak_injective
+          #print axioms Blincs.tweak_fields_no_wrap
           #print axioms Blincs.uporsLayerByte_ne_htLayer
           #print axioms Blincs.frameContext_prefix_free
           #print axioms Blincs.sliceCount_eq_spernerIE
           #print axioms Blincs.wots_sperner_cardinality
-          #print axioms Blincs.wots_sperner_gt_pow120
-          #print axioms Blincs.wots_w39_lt_pow120
+          #print axioms Blincs.wots_sperner_gt_pow116
+          #print axioms Blincs.wots_s680_lt_pow116
+          #print axioms Blincs.wots_w59_lt_pow116
           #print axioms Blincs.upors_slice_count
           #print axioms Blincs.uporsCode_sum
           #print axioms Blincs.uporsCode_antichain
@@ -58,10 +60,19 @@ jobs:
           #print axioms Blincs.merkleReconstruct_correct
           #print axioms Blincs.merkle_forgery_collision
           #print axioms Blincs.octopusClimbAux_extract
+          #print axioms Blincs.octopusExtractAux_len_eq_exactSibs
+          #print axioms Blincs.octopusClimbAux_sibs_consumed
           #print axioms Blincs.octopus_forgery_collision
           #print axioms Blincs.extractUporsLeaves_spec
-          #print axioms Blincs.wotsRank_lt_sliceCount
+          #print axioms Blincs.validWotsHash_eq_of_digits_eq
+          #print axioms Blincs.wotsC_dominance
+          #print axioms Blincs.wotsCDigit_encodeWotsCDigits
+          #print axioms Blincs.encodeWotsCDigits_valid
+          #print axioms Blincs.encodeWotsCDigits_wotsCDigit
           #print axioms Blincs.blincs_completeness
+          #print axioms Blincs.checkValidWotsHash_iff
+          #print axioms Blincs.checkValidUporsSel_iff
+          #print axioms Blincs.signNormative_sound
           #print axioms Blincs.encodeImprint_length
           #print axioms Blincs.encodeImprint_injective
           #print axioms Blincs.decodeImprint_encodeImprint
@@ -70,7 +81,40 @@ jobs:
           #print axioms Blincs.rng_failure_hedged_fallback
           LEAN
           cat /tmp/axioms.txt
-          if grep -E 'sorryAx|Lean\.ofReduceBool|Lean\.trustCompiler' /tmp/axioms.txt; then
-            echo "ERROR: unexpected axiom or sorryAx found!"
-            exit 1
-          fi
+          python3 - <<'PY'
+          import re
+          allowed = {"propext", "Classical.choice", "Quot.sound"}
+          expected = [
+              "Blincs.key_contexts_distinct", "Blincs.encodeTweak_injective", "Blincs.tweak_fields_no_wrap",
+              "Blincs.uporsLayerByte_ne_htLayer", "Blincs.frameContext_prefix_free", "Blincs.sliceCount_eq_spernerIE",
+              "Blincs.wots_sperner_cardinality", "Blincs.wots_sperner_gt_pow116", "Blincs.wots_s680_lt_pow116",
+              "Blincs.wots_w59_lt_pow116", "Blincs.upors_slice_count", "Blincs.uporsCode_sum",
+              "Blincs.uporsCode_antichain", "Blincs.wots_dominance", "Blincs.chain_forgery_extract",
+              "Blincs.merkleReconstruct_correct", "Blincs.merkle_forgery_collision", "Blincs.octopusClimbAux_extract",
+              "Blincs.octopusExtractAux_len_eq_exactSibs", "Blincs.octopusClimbAux_sibs_consumed",
+              "Blincs.octopus_forgery_collision", "Blincs.extractUporsLeaves_spec",
+              "Blincs.validWotsHash_eq_of_digits_eq", "Blincs.wotsC_dominance",
+              "Blincs.wotsCDigit_encodeWotsCDigits", "Blincs.encodeWotsCDigits_valid",
+              "Blincs.encodeWotsCDigits_wotsCDigit", "Blincs.blincs_completeness",
+              "Blincs.checkValidWotsHash_iff", "Blincs.checkValidUporsSel_iff",
+              "Blincs.signNormative_sound", "Blincs.encodeImprint_length", "Blincs.encodeImprint_injective",
+              "Blincs.decodeImprint_encodeImprint", "Blincs.decodeImprint_bad_len",
+              "Blincs.blincs_forgery_dichotomy", "Blincs.rng_failure_hedged_fallback",
+          ]
+          lines = [l.strip() for l in open("/tmp/axioms.txt") if l.strip()]
+          assert len(lines) == len(expected), f"expected {len(expected)} axiom lines, got {len(lines)}"
+          seen = []
+          for line in lines:
+              m0 = re.fullmatch(r"'([^']+)' does not depend on any axioms", line)
+              if m0:
+                  seen.append(m0.group(1))
+                  continue
+              m = re.fullmatch(r"'([^']+)' depends on axioms: \[([^\]]+)\]", line)
+              assert m, f"unexpected output format: {line}"
+              seen.append(m.group(1))
+              axioms = {a.strip() for a in m.group(2).split(",")}
+              extra = axioms - allowed
+              assert not extra, f"DISALLOWED AXIOM(S) {extra} in: {line}"
+          assert seen == expected, f"theorem list mismatch: {seen} vs {expected}"
+          print(f"STRICT ALLOWLIST PASSED: all {len(seen)} expected theorems use only {sorted(allowed)}!")
+          PY
