@@ -28,7 +28,7 @@ The design goals that follow:
 - **Two-pillar `12+7+7+7` `S-WOTS+Z` + `U-PORS` architecture (`8` tweak kinds, `0 B` required ROM):**
   - **Hypertree:** `d = 4` layers (`h = 33`), one `128 KiB` cached top tree (`h_top = 12`, `4,096` leaves) + three uniform height-`7` lower trees (`128` leaves each), using ONE uniform OTS primitive (`S-WOTS+Z`: `n = 24, w = 40, S = 468, z = 8`, `2`-byte `u16` counter).
   - **Few-time signature:** ONE height-`10` binary Merkle tree (`1,024` leaves) using `U-PORS(n = 3, w = 24, S = 42, C = 376, k = 10, m_max = 44)` with closed-form hexagon unranking (`0 B` ROM), exact `64`-byte single-block BLAKE3 leaf hashing (`16 + 3 × 16 = 64 B`), Octopus path merging with canonical trailing zero-padding, and indexed `32`-byte `Keyed` codeword derivation (zero XOF).
-- **Fast constant-work verification & 100% SIMD-aligned single-threaded signing:** verification executes **`2,263` exact constant BLAKE3 compressions** (no data-dependent chain-length variance!) and zero heap allocations; every tree size (`128`, `1,024`, `4,096` leaves -> `3,072` / `98,304` chains) is an exact multiple of `32` SIMD lanes, enabling a single-threaded `12,288`-chain SIMD super-wave via `blake3-servil-core = "=0.11.0"`.
+- **Fast constant-work verification & 100% SIMD-aligned single-threaded signing:** short-message verification executes **`2,267` BLAKE3 compressions** (exact constant chain work: `468` steps/hypertree layer, `27` steps/opened `U-PORS` leaf) and zero heap allocations; every tree size (`128`, `1,024`, `4,096` leaves -> `3,072` / `98,304` chains) is an exact multiple of `32` SIMD lanes, enabling a single-threaded `12,288`-chain SIMD super-wave via `blake3-servil-core = "=0.11.0"`.
 - **Suite-separated key schedule, framed application `Context`, and fail-closed verification:** every algorithm key-derivation context binds `BLINCS-128-A2`, every imprint binds a typed `Context` (`0..=255` bytes, framed as `u8(len(ctx)) || ctx`) into `K_msg`, `R`, and `D_seed`, and verification fails closed.
 
 ---
@@ -54,8 +54,8 @@ With a `128 KiB` cached top tree (`h_top = 12`) and a `≤ 5.0 s` `p99` warm sig
 |---:|---:|---:|
 | $2^{32}$ (budget, 4.29B) | **128.58 bits** | **135.37 bits** |
 | $2^{33}$ ($2\times$, 8.59B) | 121.56 bits | **128.91 bits** |
-| $2^{34}$ ($4\times$, 17.2B) | 113.71 bits | 121.48 bits |
-| $2^{35}$ ($8\times$, 34.4B) | 104.88 bits | 112.88 bits |
+| $2^{34}$ ($4\times$, 17.2B) | 113.29 bits | ~121.1 bits |
+| $2^{35}$ ($8\times$, 34.4B) | 103.55 bits | ~111.7 bits |
 
 Crucially, `BLINCS-128-A2` clears **128.58 bits at $q = 2^{32}$ purely from the elementary without-replacement hypergeometric DP with ZERO cap credit** — so neither the paper proof nor the Lean 4 formalization depends on Monte Carlo estimation — while the verifier-enforced Octopus cap (`m_max = 44`, `p_cap ≈ 0.0007325`) contributes `+6.79` additional true bits at $2^{32}$ and keeps true security above `128` bits even at $2\times$ overuse ($2^{33}$).
 
@@ -69,11 +69,11 @@ Our prior `BLINCS-128-7x5` draft targeted zero-cache `60 MHz` Ledger `ST33` (`�
 
 *(No Cortex-M hardware has been measured; Cortex-M33 times below are modeled from ~1,500 cycles per Thumb-2 scalar BLAKE3 compression = `9.375 µs/comp` @ 160 MHz with streaming `O(h)` TreeHash.)*
 
-| Operation | Exact BLAKE3 compressions | Modeled `160 MHz` Cortex-M33 | Modeled `1-core` Apple M6 (`blake3-servil-core 0.11.0`) |
+| Operation | Exact BLAKE3 compressions | Modeled `160 MHz` Cortex-M33 | Measured `1-core` Apple M6 (`signet`, `blake3-servil-core 0.11.0`) |
 |---|---:|---:|---:|
-| `from_seed` (`128 KiB` top tree, `h_top = 12`) | `3,964,927` | ~37.2 s (once at keygen, cached in Flash) | ~31.6–32.0 ms |
-| Warm sign (`3×` height-7 + `1×` height-10 `U-PORS` + grind) | `447,976` fixed + `2,389` mean / `~8,000` `p99` | **~4.22 s mean / ~4.29 s `p99`** (`1.013×` tail!) | **~3.80 ms** (12,288-chain super-wave) |
-| Verify (`2,263` exact constant) | **`2,263`** | **~21.2 ms** | **~39.1 µs** (`25,600/s`, zero heap alloc) |
+| `from_seed` (`128 KiB` top tree, `h_top = 12`) | `3,964,927` | ~37.2 s (once at keygen, cached in Flash) | **31.97 ms** |
+| Warm sign (`3×` height-7 + `1×` height-10 `U-PORS` + grind) | `447,976` fixed + `2,389` mean / `~8,000` `p99` | **~4.22 s mean / ~4.27 s `p99`** (`1.013×` tail!) | **4.15 ms** (12,288-chain super-wave + self-verify) |
+| Verify (short message, `sibs = 44`) | **`2,267`** | **~21.3 ms** | **39.1 µs** (`25,600/s`, zero heap alloc) |
 
 ### Why every parameter has its exact value
 
@@ -141,7 +141,7 @@ Signet uses a single private `0600` 32-byte state file rotated via sibling temp 
 
 ## 7. Crash-only design and single-threaded SIMD performance engineering
 
-- **Pure crash-only lifecycle (zero `Drop`, zero background threads, zero `thread_local!`):** `Signet` caches its `128 KiB` top tree in memory once on construction. Verification (`SignetId::verify` / `verify_with`) executes `2,263` constant compressions with **zero heap allocations** via `TreeHasher::on_this_core()`. Signing uses a **merged 12,288-chain single-threaded SIMD super-wave** (`3` height-7 trees × `128 × 24 = 9,216` chains + `1` height-10 `U-PORS` tree × `1,024 × 3 = 3,072` chains stepped together in lockstep!), `TreeHasher::hash_counter_range` for register-only `ChainSecret`/`OneTimeMsg`/`FewSelect` sweeps, and `u128`+`u64` level-4 Octopus early-out during `U-PORS` grinding.
+- **Pure crash-only lifecycle (zero `Drop`, zero background threads, zero `thread_local!`):** `Signet` caches its `128 KiB` top tree in memory once on construction. Verification (`SignetId::verify` / `verify_with`) executes `2,267` short-message compressions with **zero heap allocations** via `TreeHasher::on_this_core()`. Signing uses a **merged 12,288-chain single-threaded SIMD super-wave** (`3` height-7 trees × `128 × 24 = 9,216` chains + `1` height-10 `U-PORS` tree × `1,024 × 3 = 3,072` chains stepped together in lockstep!) and `TreeHasher::hash_counter_range` for register-only `ChainSecret`/`OneTimeMsg`/`FewSelect` sweeps.
 - **Types carry their rules & fail-stop contracts:** `#![forbid(unsafe_code)]`; `Signet::imprint` / `imprint_with` self-verify every produced imprint (~`39 µs`) before returning and panic on mismatch.
 
 ---
