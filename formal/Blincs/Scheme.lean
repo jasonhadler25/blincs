@@ -288,7 +288,7 @@ private theorem insertSortedDedup_strictlySorted (x : Nat) :
           · rw [ite_eq_right h4] at hrec ⊢; exact ⟨hs.1, hrec⟩
 
 /-- Scan up to `UPORS_SELECT_MAX_DRAWS` (18) consecutive 11-bit draws from bits `0..198` of `D_sel`,
-    collecting the first `UPORS_K` (10) distinct leaves sorted strictly ascending (`SPEC.md §8.1`). -/
+    collecting the first `UPORS_K` (9) distinct leaves sorted strictly ascending (`SPEC.md §8.1`). -/
 def extractUporsLeavesAux (D_sel : Bytes 32) : (i rem : Nat) → List Nat → Option (List Nat)
   | _, 0, acc => if acc.length = UPORS_K then some acc else none
   | i, rem + 1, acc =>

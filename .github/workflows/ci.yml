@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   rust-reference:
     name: Rust reference (fmt, clippy, doc, vectors)
@@ -13,9 +16,10 @@ jobs:
       run:
         working-directory: reference
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         with:
+          toolchain: stable
           components: rustfmt, clippy
       - run: cargo fmt -- --check
       - run: cargo clippy --all-targets --locked -- -D warnings
@@ -32,57 +36,24 @@ jobs:
       run:
         working-directory: formal
     steps:
-      - uses: actions/checkout@v4
-      - name: Install elan and pinned Lean 4 toolchain
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - name: Install elan (SHA-256 verified) and pinned Lean 4 toolchain
         run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          set -euo pipefail
+          URL="https://raw.githubusercontent.com/leanprover/elan/3cc76985a1becb3c03cd65c1c5007e6f186ae474/elan-init.sh"
+          EXPECTED="a620ff1641616222c8d37c54845492004bb84d6877cdbc944dd65c1aa685bf53"
+          curl -fsSL "$URL" -o /tmp/elan-init.sh
+          echo "$EXPECTED  /tmp/elan-init.sh" | sha256sum -c -
+          sh /tmp/elan-init.sh -y --default-toolchain none
+          rm -f /tmp/elan-init.sh
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - name: Build and verify zero sorryAx / zero custom axioms
         run: |
+          set -euo pipefail
           lake build
-          lake env lean --stdin <<'LEAN' > /tmp/axioms.txt
-          import Blincs
-          #print axioms Blincs.key_contexts_distinct
-          #print axioms Blincs.encodeTweak_injective
-          #print axioms Blincs.tweak_fields_no_wrap
-          #print axioms Blincs.uporsLayerByte_ne_htLayer
-          #print axioms Blincs.frameContext_prefix_free
-          #print axioms Blincs.sliceCount_eq_spernerIE
-          #print axioms Blincs.wots_sperner_cardinality
-          #print axioms Blincs.wots_sperner_gt_pow116
-          #print axioms Blincs.wots_s680_lt_pow116
-          #print axioms Blincs.wots_w59_lt_pow116
-          #print axioms Blincs.upors_slice_count
-          #print axioms Blincs.uporsCode_sum
-          #print axioms Blincs.uporsCode_antichain
-          #print axioms Blincs.wots_dominance
-          #print axioms Blincs.chain_forgery_extract
-          #print axioms Blincs.merkleReconstruct_correct
-          #print axioms Blincs.merkle_forgery_collision
-          #print axioms Blincs.octopusClimbAux_extract
-          #print axioms Blincs.octopusExtractAux_len_eq_exactSibs
-          #print axioms Blincs.octopusClimbAux_sibs_consumed
-          #print axioms Blincs.octopus_forgery_collision
-          #print axioms Blincs.extractUporsLeaves_spec
-          #print axioms Blincs.validWotsHash_eq_of_digits_eq
-          #print axioms Blincs.wotsC_dominance
-          #print axioms Blincs.wotsCDigit_encodeWotsCDigits
-          #print axioms Blincs.encodeWotsCDigits_valid
-          #print axioms Blincs.encodeWotsCDigits_wotsCDigit
-          #print axioms Blincs.blincs_completeness
-          #print axioms Blincs.checkValidWotsHash_iff
-          #print axioms Blincs.checkValidUporsSel_iff
-          #print axioms Blincs.signNormative_sound
-          #print axioms Blincs.encodeImprint_length
-          #print axioms Blincs.encodeImprint_injective
-          #print axioms Blincs.decodeImprint_encodeImprint
-          #print axioms Blincs.decodeImprint_bad_len
-          #print axioms Blincs.blincs_forgery_dichotomy
-          #print axioms Blincs.rng_failure_hedged_fallback
-          LEAN
-          cat /tmp/axioms.txt
           python3 - <<'PY'
-          import re
+          import re, subprocess, sys
+
           allowed = {"propext", "Classical.choice", "Quot.sound"}
           expected = [
               "Blincs.key_contexts_distinct", "Blincs.encodeTweak_injective", "Blincs.tweak_fields_no_wrap",
@@ -101,8 +72,12 @@ jobs:
               "Blincs.decodeImprint_encodeImprint", "Blincs.decodeImprint_bad_len",
               "Blincs.blincs_forgery_dichotomy", "Blincs.rng_failure_hedged_fallback",
           ]
-          lines = [l.strip() for l in open("/tmp/axioms.txt") if l.strip()]
-          assert len(lines) == len(expected), f"expected {len(expected)} axiom lines, got {len(lines)}"
+          query = "import Blincs\n" + "".join(f"#print axioms {t}\n" for t in expected)
+          out = subprocess.check_output(["lake", "env", "lean", "--stdin"], input=query, text=True)
+          print(out, end="")
+          lines = [l.strip() for l in out.splitlines() if l.strip()]
+          if len(lines) != len(expected):
+              sys.exit(f"FAIL: expected {len(expected)} axiom lines, got {len(lines)}")
           seen = []
           for line in lines:
               m0 = re.fullmatch(r"'([^']+)' does not depend on any axioms", line)
@@ -110,11 +85,14 @@ jobs:
                   seen.append(m0.group(1))
                   continue
               m = re.fullmatch(r"'([^']+)' depends on axioms: \[([^\]]+)\]", line)
-              assert m, f"unexpected output format: {line}"
+              if not m:
+                  sys.exit(f"FAIL: unexpected output format: {line}")
               seen.append(m.group(1))
               axioms = {a.strip() for a in m.group(2).split(",")}
               extra = axioms - allowed
-              assert not extra, f"DISALLOWED AXIOM(S) {extra} in: {line}"
-          assert seen == expected, f"theorem list mismatch: {seen} vs {expected}"
+              if extra:
+                  sys.exit(f"FAIL: DISALLOWED AXIOM(S) {sorted(extra)} in: {line}")
+          if seen != expected:
+              sys.exit(f"FAIL: theorem list mismatch: {seen} vs {expected}")
           print(f"STRICT ALLOWLIST PASSED: all {len(seen)} expected theorems use only {sorted(allowed)}!")
           PY
